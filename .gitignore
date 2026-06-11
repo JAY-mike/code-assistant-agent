@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.env
+data/chroma/
+data/target_repo/
+venv/
+.venv/
+*.db
+.DS_Store
