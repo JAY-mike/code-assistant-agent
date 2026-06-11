@@ -1,0 +1,35 @@
+from pydantic_settings import BaseSettings
+
+
+class Settings(BaseSettings):
+    # App
+    APP_NAME: str = "Code Assistant Agent"
+    DEBUG: bool = True
+
+    # MySQL
+    MYSQL_HOST: str = "localhost"
+    MYSQL_PORT: int = 3306
+    MYSQL_USER: str = "root"
+    MYSQL_PASSWORD: str = "123456"
+    MYSQL_DATABASE: str = "code_assistant"
+
+    # Redis
+    REDIS_HOST: str = "localhost"
+    REDIS_PORT: int = 6379
+
+    # Chroma
+    CHROMA_PERSIST_DIR: str = "./data/chroma"
+
+    # 目标代码仓库路径
+    REPO_PATH: str = "./data/target_repo"
+
+    # Embedding 模型
+    EMBEDDING_MODEL: str = "BAAI/bge-small-zh-v1.5"
+    EMBEDDING_DEVICE: str = "cpu"
+
+    class Config:
+        env_file = ".env"
+        env_file_encoding = "utf-8"
+
+
+settings = Settings()
