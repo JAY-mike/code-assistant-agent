@@ -4,6 +4,7 @@ from fastapi import FastAPI
 
 from app.config import settings
 from app.database import engine, Base
+from app.models import Message , Conversation , Feedback
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):

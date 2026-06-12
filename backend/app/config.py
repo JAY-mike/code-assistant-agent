@@ -24,7 +24,8 @@ class Settings(BaseSettings):
     REPO_PATH: str = "./data/target_repo"
 
     # Embedding 模型
-    EMBEDDING_MODEL: str = "BAAI/bge-small-zh-v1.5"
+    # EMBEDDING_MODEL: str = "BAAI/bge-small-zh-v1.5"
+    EMBEDDING_MODEL: str = "sentence-transformers/all-MiniLM-L6-v2"
     EMBEDDING_DEVICE: str = "cpu"
 
     class Config:

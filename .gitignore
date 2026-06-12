@@ -4,7 +4,7 @@ __pycache__/
 .env
 data/chroma/
 data/target_repo/
-venv/
+env/
 .venv/
 *.db
 .DS_Store
