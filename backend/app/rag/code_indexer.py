@@ -1,35 +1,56 @@
+"""代码索引编排器：读取文件 → chunker 分块 → dense_retriever 存储"""
+
 import os
 import glob
 from pathlib import Path
 
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_community.embeddings import HuggingFaceEmbeddings
-from langchain_community.vectorstores import Chroma
-
 from app.config import settings
+from app.rag.chunker import CodeChunker
+from app.rag.dense_retriever import DenseRetriever
 
-# 获取项目根目录（code_indexer.py 所在位置的 parent → parent → parent）
-PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent  # 项目根目录
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 
 
 def load_code_files(repo_path: str) -> list[dict]:
     """读取 repo 下所有 .py 文件，返回 [{path, content}]"""
     documents = []
-
-    # 如果 repo_path 是相对路径，拼接成绝对路径
     full_path = repo_path
     if not os.path.isabs(repo_path):
         full_path = str(PROJECT_ROOT / repo_path)
 
-    print(f"[RAG] Looking for code in: {full_path}")
+    print(f"[Indexer] Looking for code in: {full_path}")
+
+    if not os.path.exists(full_path):
+        print(f"[Indexer ERROR] Path does not exist: {full_path}")
+        return documents
 
     pattern = os.path.join(full_path, "**", "*.py")
-    for file_path in glob.glob(pattern, recursive=True):
-        # 跳过 __pycache__ 和 tests/
+    try:
+        matched_files = glob.glob(pattern, recursive=True)
+    except Exception as e:
+        print(f"[Indexer ERROR] Failed to search files: {e}")
+        return documents
+
+    for file_path in matched_files:
         if "__pycache__" in file_path or "/tests/" in file_path or "\\tests\\" in file_path:
             continue
-        with open(file_path, "r", encoding="utf-8") as f:
-            content = f.read()
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                content = f.read()
+        except PermissionError:
+            print(f"[Indexer WARNING] Permission denied: {file_path}")
+            continue
+        except UnicodeDecodeError:
+            print(f"[Indexer WARNING] Encoding error, trying latin-1: {file_path}")
+            try:
+                with open(file_path, "r", encoding="latin-1") as f:
+                    content = f.read()
+            except Exception:
+                continue
+        except Exception as e:
+            print(f"[Indexer WARNING] Failed to read {file_path}: {e}")
+            continue
+
         if content.strip():
             documents.append({
                 "path": os.path.relpath(file_path, full_path),
@@ -38,63 +59,52 @@ def load_code_files(repo_path: str) -> list[dict]:
     return documents
 
 
-def build_chunks(documents: list[dict]) -> list[dict]:
-    """把代码文件切分成块，每块附带元信息"""
-    text_splitter = RecursiveCharacterTextSplitter(
-        chunk_size=500,
-        chunk_overlap=50,
-        separators=["\n\n", "\n", "def ", "class ", "    ", " "],
-    )
-
-    chunks = []
-    for doc in documents:
-        texts = text_splitter.split_text(doc["content"])
-        for i, text in enumerate(texts):
-            chunks.append({
-                "text": text,
-                "metadata": {
-                    "source": doc["path"],
-                    "chunk_index": i,
-                },
-            })
-    return chunks
-
-
 def create_index():
-    """主流程：加载代码 → 分块 → 向量化 → 存入 Chroma"""
-    print(f"[RAG] Loading code from {settings.REPO_PATH}...")
+    """主流程：加载代码 → chunker 分块 → retriever 存储"""
+    print(f"[Indexer] Loading code from {settings.REPO_PATH}...")
     documents = load_code_files(settings.REPO_PATH)
-    print(f"[RAG] Loaded {len(documents)} files")
+    print(f"[Indexer] Loaded {len(documents)} files")
 
     if not documents:
-        print("[RAG ERROR] No .py files found! Check REPO_PATH config.")
-        return None
+        print("[Indexer ERROR] No .py files found!")
+        return
 
-    chunks = build_chunks(documents)
-    print(f"[RAG] Created {len(chunks)} chunks")
+    # 使用配置的分块策略
+    try:
+        chunker = CodeChunker(
+            strategy=settings.CHUNK_STRATEGY,
+            chunk_size=settings.CHUNK_SIZE,
+            chunk_overlap=settings.CHUNK_OVERLAP,
+        )
+    except Exception as e:
+        print(f"[Indexer ERROR] Failed to create chunker: {e}")
+        return
 
-    print(f"[RAG] Loading embedding model: {settings.EMBEDDING_MODEL}...")
-    embeddings = HuggingFaceEmbeddings(
-        model_name=settings.EMBEDDING_MODEL,
-        model_kwargs={"device": settings.EMBEDDING_DEVICE},
-    )
+    print(f"[Indexer] Using chunk strategy: {settings.CHUNK_STRATEGY}")
+    try:
+        chunks = chunker.chunk(documents)
+    except Exception as e:
+        print(f"[Indexer ERROR] Chunking failed: {e}")
+        return
+    print(f"[Indexer] Created {len(chunks)} chunks")
 
-    # persist_directory 也用绝对路径
-    chroma_path = settings.CHROMA_PERSIST_DIR
-    if not os.path.isabs(chroma_path):
-        chroma_path = str(PROJECT_ROOT / chroma_path)
+    # 存储到 Chroma
+    try:
+        retriever = DenseRetriever()
+        retriever.delete_collection()
+        retriever = DenseRetriever()
+        retriever.add_chunks(chunks)
+        print(f"[Indexer] Index built successfully with {len(chunks)} chunks")
+    except Exception as e:
+        print(f"[Indexer ERROR] Failed to build index: {e}")
+        return
 
-    print(f"[RAG] Creating Chroma index at {chroma_path}...")
-    vector_store = Chroma.from_texts(
-        texts=[c["text"] for c in chunks],
-        embedding=embeddings,
-        metadatas=[c["metadata"] for c in chunks],
-        persist_directory=chroma_path,
-    )
-    vector_store.persist()
-    print(f"[RAG] Index created with {len(chunks)} chunks")
+    return retriever
 
-    return vector_store
+
+def rebuild_index():
+    """对外暴露的"重建索引"接口，后续 API 路由会调用"""
+    return create_index()
 
 
 if __name__ == "__main__":

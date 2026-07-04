@@ -28,6 +28,10 @@ class Settings(BaseSettings):
     EMBEDDING_MODEL: str = "sentence-transformers/all-MiniLM-L6-v2"
     EMBEDDING_DEVICE: str = "cpu"
 
+    # 分块策略
+    CHUNK_STRATEGY: str = "recursive"  # recursive / semantic / token
+    CHUNK_SIZE: int = 500
+    CHUNK_OVERLAP: int = 50
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"
