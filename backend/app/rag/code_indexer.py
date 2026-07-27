@@ -7,6 +7,8 @@ from pathlib import Path
 from app.config import settings
 from app.rag.chunker import CodeChunker
 from app.rag.dense_retriever import DenseRetriever
+from app.database import async_session_factory
+from app.models.index_version import IndexVersion
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 
@@ -59,7 +61,25 @@ def load_code_files(repo_path: str) -> list[dict]:
     return documents
 
 
-def create_index():
+async def save_version_record(strategy: str, chunk_size: int, chunk_overlap: int,
+                              file_count: int, chunk_count: int):
+    """异步写入索引版本记录"""
+    try:
+        async with async_session_factory() as session:
+            session.add(IndexVersion(
+                strategy=strategy,
+                chunk_size=chunk_size,
+                chunk_overlap=chunk_overlap,
+                file_count=file_count,
+                chunk_count=chunk_count,
+            ))
+            await session.commit()
+        print("[Indexer] Version record saved")
+    except Exception as e:
+        print(f"[Indexer WARNING] Failed to save version record: {e}")
+
+
+async def create_index():
     """主流程：加载代码 → chunker 分块 → retriever 存储"""
     print(f"[Indexer] Loading code from {settings.REPO_PATH}...")
     documents = load_code_files(settings.REPO_PATH)
@@ -94,6 +114,15 @@ def create_index():
         retriever.delete_collection()
         retriever = DenseRetriever()
         retriever.add_chunks(chunks)
+
+        await save_version_record(
+            strategy=settings.CHUNK_STRATEGY,
+            chunk_size=settings.CHUNK_SIZE,
+            chunk_overlap=settings.CHUNK_OVERLAP,
+            file_count=len(documents),
+            chunk_count=len(chunks),
+        )
+
         print(f"[Indexer] Index built successfully with {len(chunks)} chunks")
     except Exception as e:
         print(f"[Indexer ERROR] Failed to build index: {e}")
@@ -102,10 +131,20 @@ def create_index():
     return retriever
 
 
-def rebuild_index():
+async def rebuild_index():
     """对外暴露的"重建索引"接口，后续 API 路由会调用"""
-    return create_index()
+    return await create_index()
 
 
 if __name__ == "__main__":
-    create_index()
+    import asyncio
+
+    async def main():
+        try:
+            await create_index()
+        finally:
+            from app.database import engine
+            await engine.dispose()
+            print("[Indexer] Database connections closed")
+
+    asyncio.run(main())

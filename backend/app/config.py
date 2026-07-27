@@ -16,6 +16,7 @@ class Settings(BaseSettings):
     # Redis
     REDIS_HOST: str = "localhost"
     REDIS_PORT: int = 6379
+    REDIS_CACHE_TTL: int = 300  # 检索缓存过期时间（秒），默认 5 分钟
 
     # Chroma
     CHROMA_PERSIST_DIR: str = "./data/chroma"

@@ -35,6 +35,22 @@ class DenseRetriever:
             raise RuntimeError(
                 f"Failed to load embedding model '{settings.EMBEDDING_MODEL}': {e}"
             )
+        
+        # Redis 缓存
+        self.redis_client = None
+        try:
+            import redis as redis_lib
+            self.redis_client = redis_lib.Redis(
+                host=settings.REDIS_HOST,
+                port=settings.REDIS_PORT,
+                db=0,
+                decode_responses=True,
+                protocol=2,  # 兼容 Redis 6.x 及以下版本
+            )
+            self.redis_client.ping()
+        except Exception as e:
+            print(f"[DenseRetriever] Redis not available, caching disabled: {e}")
+            self.redis_client = None
 
         # 加载或创建 Chroma 库
         try:
@@ -46,17 +62,29 @@ class DenseRetriever:
             raise RuntimeError(f"Failed to initialize Chroma at {self.persist_dir}: {e}")
 
     def search(self, query: str, k: int = 5) -> list[dict[str, Any]]:
-        """检索与 query 最相似的 k 个代码块"""
+        """检索与 query 最相似的 k 个代码块（带 Redis 缓存）"""
         if not query or not query.strip():
             return []
 
+        # 尝试从缓存读取
+        cache_key = f"dense_search:{query.strip()}:{k}"
+        if self.redis_client:
+            try:
+                cached = self.redis_client.get(cache_key)
+                if cached:
+                    import json
+                    return json.loads(cached)
+            except Exception:
+                pass  # 缓存读取失败，回退到正常检索
+
+        # 正常检索
         try:
             docs = self.db.similarity_search(query, k=k)
         except Exception as e:
             print(f"[DenseRetriever] Search failed: {e}")
             return []
 
-        return [
+        results = [
             {
                 "text": doc.page_content,
                 "source": doc.metadata.get("source", "unknown"),
@@ -66,10 +94,32 @@ class DenseRetriever:
             for doc in docs
         ]
 
+        # 写入缓存
+        if self.redis_client and results:
+            try:
+                import json
+                self.redis_client.setex(
+                    cache_key, settings.REDIS_CACHE_TTL, json.dumps(results, ensure_ascii=False)
+                )
+            except Exception:
+                pass
+
+        return results
+
     def search_with_score(self, query: str, k: int = 5) -> list[dict[str, Any]]:
-        """检索并返回相似度分数"""
+        """检索并返回相似度分数（带 Redis 缓存）"""
         if not query or not query.strip():
             return []
+
+        cache_key = f"dense_search_score:{query.strip()}:{k}"
+        if self.redis_client:
+            try:
+                cached = self.redis_client.get(cache_key)
+                if cached:
+                    import json
+                    return json.loads(cached)
+            except Exception:
+                pass
 
         try:
             docs_with_scores = self.db.similarity_search_with_score(query, k=k)
@@ -77,7 +127,7 @@ class DenseRetriever:
             print(f"[DenseRetriever] Search with score failed: {e}")
             return []
 
-        return [
+        results = [
             {
                 "text": doc.page_content,
                 "source": doc.metadata.get("source", "unknown"),
@@ -86,6 +136,17 @@ class DenseRetriever:
             }
             for doc, score in docs_with_scores
         ]
+
+        if self.redis_client and results:
+            try:
+                import json
+                self.redis_client.setex(
+                    cache_key, settings.REDIS_CACHE_TTL, json.dumps(results, ensure_ascii=False)
+                )
+            except Exception:
+                pass
+
+        return results
 
     def add_chunks(self, chunks: list[dict[str, Any]]) -> list[str]:
         """向 Chroma 添加新的代码块"""

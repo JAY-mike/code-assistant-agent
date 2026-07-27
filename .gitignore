@@ -8,3 +8,6 @@ env/
 .venv/
 *.db
 .DS_Store
+1.png
+*.html
+*.css
