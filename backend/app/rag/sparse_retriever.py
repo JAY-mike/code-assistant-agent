@@ -17,6 +17,23 @@ class SparseRetriever:
     def __init__(self) -> None:
         self.bm25 = None
         self.chunks : list[dict] = []
+        
+        #redis缓存
+        self.reids_client = None
+        try:
+            import redis as redis_lib
+            self.redis_client = redis_lib.Redis(
+                host=settings.REDIS_HOST,
+                port=settings.REDIS_PORT,
+                db=0,
+                decode_responses=True,
+                protocol=2,
+            )
+            self.reids_client.ping()
+        except Exception as e:
+            print(f"[SparseRetriever] Redis not available: {e}")
+            self.redis_client = None
+
         self._tokenized: list[list[str]] = []
 
     def _tokenize(self , text: str) -> list[str]:
@@ -29,6 +46,7 @@ class SparseRetriever:
         self.chunks = chunks
         self._tokenized = [self._tokenize(c["text"]) for c in chunks]
         self.bm25 = BM25Okapi(self._tokenized)
+        self._save_to_redis()
         print(f"[SparseRetriever] Index built with {len(chunks)} chunks")
 
     def search(self, query: str, k: int = 5) -> list[dict]:
@@ -63,6 +81,41 @@ class SparseRetriever:
         """Redis 缓存 key（基于索引内容哈希）"""
         return f"bm25_index: {len(self.chunks)}"
 
+    def _save_to_redis(self):
+        """将 BM25 索引持久化到 Redis"""
+        if not self.redis_client or not self.bm25:
+            return 
+        try:
+            data = {
+                "chunks": self.chunks,
+                "corpus": self._tokenized,
+            }
+            self.redis_client.setex(
+                self.redis_key() , 3600 * 24,
+                json.dumps(data , ensure_ascii= False , default= str) 
+            )
+        except Exception as e:
+            print(f"[SparseRetriever] Failed to cache to Redis: {e}")
+
+    @classmethod
+    def from_redis(cls) -> "SparseRetriever":
+        """尝试从 Redis 恢复 BM25 索引"""
+        retriever = cls()
+        if not retriever.redis_client:
+            return retriever
+        try:
+            data = retriever.redis_client.get(retriever.redis_key())
+            if data:
+                parsed = json.load(data)
+                retriever.chunks = parsed["chunks"]
+                retriever._tokenized = parsed["corpus"]
+                retriever.bm25 = BM25Okapi(retriever._tokenized)
+                print(f"[SparseRetriever] Restored from Redis ({len(retriever.chunks)} chunks)")
+        except Exception as e:
+            print(f"[SparseRetriever] Redis restore failed: {e}")
+        return retriever         
+
+        
     @classmethod
     def from_chunks(cls , chunks: list[dict]) -> "SparseRetriever":
         """便捷方法：创建 + 建索引"""

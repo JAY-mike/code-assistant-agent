@@ -63,13 +63,48 @@ def hybrid_search(
         k_rrf: RRF 常数
         top_n: 最终返回 top-n
     """
+
+    start = time.time()
+
     dense_results = dense_retriever.search(query, k=k_dense)
     sparse_results = sparse_retriever.search(query, k=k_sparse)
 
     print(f"[Hybrid] Dense: {len(dense_results)} results, "
           f"Sparse: {len(sparse_results)} results")
 
-    return rrf([dense_results, sparse_results], k=k_rrf, top_n=top_n)
+    fused = rrf([dense_results, sparse_results], k=k_rrf, top_n=top_n)
+
+    total_ms = round((time.time() - start) * 1000, 2)
+    print(f"[Hybrid] Fused: {len(fused)}, latency: {total_ms}ms")
+
+    # 异步写入检索日志
+    import asyncio
+    try:
+        from app.database import async_session_factory
+        from app.models.retrieval_log import RetrievalLog
+        import datetime
+        from datetime import UTC
+
+        async def save_log():
+            async with async_session_factory() as session:
+                session.add(
+                    RetrievalLog(
+                    query_text=query,
+                    dense_top_k=dense_results[:3],
+                    sparse_top_k=sparse_results[:3],
+                    fused_top_n=fused,
+                    strategy="hybrid",
+                    total_latency_ms=total_ms,
+
+                    )
+                )
+                await session.commit()
+        asyncio.create_task(save_log())
+    except Exception as e:
+        print(f"[Hybrid WARNING] Failed to log retrieval: {e}")
+
+    return fused
+    
 
 if __name__ == "__main__":
     from app.rag.chunker import CodeChunker
