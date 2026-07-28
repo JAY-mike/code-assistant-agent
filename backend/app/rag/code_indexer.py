@@ -9,6 +9,7 @@ from app.rag.chunker import CodeChunker
 from app.rag.dense_retriever import DenseRetriever
 from app.database import async_session_factory
 from app.models.index_version import IndexVersion
+from app.logger import log
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 
@@ -20,17 +21,17 @@ def load_code_files(repo_path: str) -> list[dict]:
     if not os.path.isabs(repo_path):
         full_path = str(PROJECT_ROOT / repo_path)
 
-    print(f"[Indexer] Looking for code in: {full_path}")
+    log.info("Looking for code in: %s", full_path)
 
     if not os.path.exists(full_path):
-        print(f"[Indexer ERROR] Path does not exist: {full_path}")
+        log.error("Path does not exist: %s", full_path)
         return documents
 
     pattern = os.path.join(full_path, "**", "*.py")
     try:
         matched_files = glob.glob(pattern, recursive=True)
     except Exception as e:
-        print(f"[Indexer ERROR] Failed to search files: {e}")
+        log.error("Failed to search files: %s", e)
         return documents
 
     for file_path in matched_files:
@@ -40,17 +41,17 @@ def load_code_files(repo_path: str) -> list[dict]:
             with open(file_path, "r", encoding="utf-8") as f:
                 content = f.read()
         except PermissionError:
-            print(f"[Indexer WARNING] Permission denied: {file_path}")
+            log.warning("Permission denied: %s", file_path)
             continue
         except UnicodeDecodeError:
-            print(f"[Indexer WARNING] Encoding error, trying latin-1: {file_path}")
+            log.warning("Encoding error, trying latin-1: %s", file_path)
             try:
                 with open(file_path, "r", encoding="latin-1") as f:
                     content = f.read()
             except Exception:
                 continue
         except Exception as e:
-            print(f"[Indexer WARNING] Failed to read {file_path}: {e}")
+            log.warning("Failed to read %s: %s", file_path, e)
             continue
 
         if content.strip():
@@ -74,22 +75,21 @@ async def save_version_record(strategy: str, chunk_size: int, chunk_overlap: int
                 chunk_count=chunk_count,
             ))
             await session.commit()
-        print("[Indexer] Version record saved")
+        log.info("Version record saved")
     except Exception as e:
-        print(f"[Indexer WARNING] Failed to save version record: {e}")
+        log.warning("Failed to save version record: %s", e)
 
 
 async def create_index():
     """主流程：加载代码 → chunker 分块 → retriever 存储"""
-    print(f"[Indexer] Loading code from {settings.REPO_PATH}...")
+    log.info("Loading code from %s", settings.REPO_PATH)
     documents = load_code_files(settings.REPO_PATH)
-    print(f"[Indexer] Loaded {len(documents)} files")
+    log.info("Loaded %d files", len(documents))
 
     if not documents:
-        print("[Indexer ERROR] No .py files found!")
+        log.error("No .py files found!")
         return
 
-    # 使用配置的分块策略
     try:
         chunker = CodeChunker(
             strategy=settings.CHUNK_STRATEGY,
@@ -97,18 +97,17 @@ async def create_index():
             chunk_overlap=settings.CHUNK_OVERLAP,
         )
     except Exception as e:
-        print(f"[Indexer ERROR] Failed to create chunker: {e}")
+        log.error("Failed to create chunker: %s", e)
         return
 
-    print(f"[Indexer] Using chunk strategy: {settings.CHUNK_STRATEGY}")
+    log.info("Using chunk strategy: %s", settings.CHUNK_STRATEGY)
     try:
         chunks = chunker.chunk(documents)
     except Exception as e:
-        print(f"[Indexer ERROR] Chunking failed: {e}")
+        log.error("Chunking failed: %s", e)
         return
-    print(f"[Indexer] Created {len(chunks)} chunks")
+    log.info("Created %d chunks", len(chunks))
 
-    # 存储到 Chroma
     try:
         retriever = DenseRetriever()
         retriever.delete_collection()
@@ -123,9 +122,9 @@ async def create_index():
             chunk_count=len(chunks),
         )
 
-        print(f"[Indexer] Index built successfully with {len(chunks)} chunks")
+        log.info("Index built successfully with %d chunks", len(chunks))
     except Exception as e:
-        print(f"[Indexer ERROR] Failed to build index: {e}")
+        log.error("Failed to build index: %s", e)
         return
 
     return retriever
@@ -145,6 +144,6 @@ if __name__ == "__main__":
         finally:
             from app.database import engine
             await engine.dispose()
-            print("[Indexer] Database connections closed")
+            log.info("Database connections closed")
 
     asyncio.run(main())

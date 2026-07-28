@@ -33,6 +33,11 @@ class Settings(BaseSettings):
     CHUNK_STRATEGY: str = "recursive"  # recursive / semantic / token
     CHUNK_SIZE: int = 500
     CHUNK_OVERLAP: int = 50
+
+    # LLM
+    LLM_API_ENDPOINT: str = "http://localhost:11434/api/chat"  # Ollama
+    # LLM_API_ENDPOINT: str = "https://api.deepseek.com/v1/chat/completions"  # DeepSeek
+    LLM_MODEL: str = "gemma:7b"    
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"
