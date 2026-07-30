@@ -35,9 +35,11 @@ class Settings(BaseSettings):
     CHUNK_OVERLAP: int = 50
 
     # LLM
-    LLM_API_ENDPOINT: str = "http://localhost:11434/api/chat"  # Ollama
-    # LLM_API_ENDPOINT: str = "https://api.deepseek.com/v1/chat/completions"  # DeepSeek
-    LLM_MODEL: str = "gemma:7b"    
+    # LLM_API_ENDPOINT: str = "http://localhost:11434/api/chat"  # Ollama
+    LLM_API_ENDPOINT: str = "https://api.deepseek.com/v1/chat/completions"
+    LLM_MODEL: str = "deepseek-v4-flash"
+    LLM_API_KEY: str = "sk-3e43d66aee4f42f3b6b5505b04a4200d"
+    # LLM_MODEL: str = "gemma:7b"    
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"

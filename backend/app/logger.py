@@ -15,7 +15,7 @@ def setup_logger(name: str = "code_assistant") -> logging.Logger:
         handler.setLevel(logging.INFO)
 
         formatter = logging.Formatter(
-            "[%(name)s] %(levelname)s %(message)s",
+            "[%(name)s] %(levelname)s [%(module)s.%(funcName)s] %(message)s",
         )
         handler.setFormatter(formatter)
         logger.addHandler(handler)

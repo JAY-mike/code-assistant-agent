@@ -2,83 +2,83 @@
 
 TEST_SET = [
     {
-        "query": "How does TinyDB initialize and manage the default table?",
+        "query": "TinyDB 如何初始化和管理默认表？",
         "expected_sources": ["tinydb/database.py"],
     },
     {
-        "query": "What storage backends does TinyDB support and how are they configured?",
+        "query": "TinyDB 支持哪些存储后端，如何配置？",
         "expected_sources": ["tinydb/storages.py"],
     },
     {
-        "query": "How does the query module implement field lookups and comparisons?",
+        "query": "Query 模块如何实现字段查找和比较？",
         "expected_sources": ["tinydb/queries.py"],
     },
     {
-        "query": "How are tables created, cached, and accessed in TinyDB?",
+        "query": "TinyDB 中如何创建、缓存和访问表？",
         "expected_sources": ["tinydb/table.py"],
     },
     {
-        "query": "What middleware mechanisms exist for processing operations in TinyDB?",
+        "query": "TinyDB 的中间件机制是如何处理操作链的？",
         "expected_sources": ["tinydb/middlewares.py"],
     },
     {
-        "query": "How does TinyDB handle atomic write operations in its storage layer?",
+        "query": "TinyDB 在存储层如何保证原子写入？",
         "expected_sources": ["tinydb/storages.py"],
     },
     {
-        "query": "What query operations are available for checking element membership in lists?",
+        "query": "有哪些查询操作可以检查元素是否在列表中？",
         "expected_sources": ["tinydb/queries.py"],
     },
     {
-        "query": "How does the Table.insert method work and what does it return?",
+        "query": "Table.insert 方法如何工作，返回什么？",
         "expected_sources": ["tinydb/table.py"],
     },
     {
-        "query": "How does TinyDB handle JSON serialization for document storage?",
+        "query": "TinyDB 如何处理 JSON 序列化来存储文档？",
         "expected_sources": ["tinydb/storages.py", "tinydb/database.py"],
     },
     {
-        "query": "What is the purpose of the Storage base class and how should it be subclassed?",
+        "query": "Storage 基类的作用是什么，如何继承它实现自定义存储？",
         "expected_sources": ["tinydb/storages.py"],
     },
     {
-        "query": "How does TinyDB implement logical OR and AND for complex queries?",
+        "query": "TinyDB 如何实现逻辑 OR 和 AND 组合查询？",
         "expected_sources": ["tinydb/queries.py"],
     },
     {
-        "query": "How does the Table class handle document IDs and the ID counter?",
+        "query": "Table 类如何处理文档 ID 和 ID 计数器？",
         "expected_sources": ["tinydb/table.py"],
     },
     {
-        "query": "How does TinyDB ensure thread safety or handle concurrent access?",
+        "query": "TinyDB 如何保证线程安全或处理并发访问？",
         "expected_sources": ["tinydb/database.py", "tinydb/storages.py"],
     },
     {
-        "query": "How does the operations module handle updating array fields in documents?",
+        "query": "operations 模块如何处理更新数组字段？",
         "expected_sources": ["tinydb/operations.py"],
     },
     {
-        "query": "How does TinyDB handle table purging and removing all documents?",
+        "query": "TinyDB 如何清空表和删除所有文档？",
         "expected_sources": ["tinydb/table.py"],
     },
     {
-        "query": "What caching strategy does the storage layer use for reading and writing data?",
+        "query": "存储层在读写数据时使用了什么缓存策略？",
         "expected_sources": ["tinydb/storages.py"],
     },
     {
-        "query": "How does TinyDB implement the 'search' method to find matching documents?",
+        "query": "TinyDB 的 search 方法是如何查找匹配文档的？",
         "expected_sources": ["tinydb/table.py"],
     },
     {
-        "query": "How does TinyDB's JSONStorage handle file reading and writing?",
+        "query": "TinyDB 的 JSONStorage 如何读取和写入文件？",
         "expected_sources": ["tinydb/storages.py"],
     },
     {
-        "query": "What happens when a document is updated using the 'update' method?",
+        "query": "使用 update 方法更新文档时具体发生了什么？",
         "expected_sources": ["tinydb/table.py"],
     },
     {
-        "query": "How does the Query class implement hash-based lookup and caching?",
+        "query": "Query 类如何实现基于哈希的查找和缓存？",
         "expected_sources": ["tinydb/queries.py"],
     },
 ]
