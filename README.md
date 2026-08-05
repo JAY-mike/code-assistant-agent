@@ -111,29 +111,45 @@ streamlit run streamlit_app.py
 
 ## 核心模块
 
-backend/app/
-├── rag/ # RAG 管道
-│ ├── chunker.py # 多策略分块（recursive / token / semantic）
-│ ├── dense_retriever.py # Chroma 稠密检索 + Redis 缓存
-│ ├── sparse_retriever.py# BM25 稀疏检索
-│ ├── fusion.py # RRF 融合 + 检索日志
-│ ├── query_rewriter.py # HyDE 查询改写
-│ ├── reranker.py # cross-encoder 重排
-│ ├── evaluation.py # 指标计算 + 消融实验
-│ └── test_set.py # 测试集
-├── agent/ # Agent 层
-│ ├── harness.py # ReAct 循环 + 决策日志
-│ ├── tools.py # search / explain / testgen
-│ ├── prompt.py # ReAct 提示词
-│ └── llm.py # LLM 调用封装（DeepSeek / Ollama）
-├── routers/ # API 路由
-│ ├── auth_router.py # 注册 / 登录 / 刷新 / 登出
-│ ├── agent_router.py # Agent 对话（会话持久化）
-│ ├── search_router.py # 代码检索
-│ └── upload_router.py # 文件上传索引
-├── models/ # ORM 模型
-└── middleware.py # Redis 滑动窗口限流
+### RAG 层（backend/app/rag/）
 
+| 模块 | 职责 |
+|------|------|
+| `chunker.py` | 多策略分块（recursive / token / semantic），可配置切换 |
+| `dense_retriever.py` | Chroma 稠密检索，带 Redis 结果缓存 |
+| `sparse_retriever.py` | BM25 稀疏检索，索引可缓存到 Redis 恢复 |
+| `fusion.py` | RRF 融合 + 混合检索编排 + 检索链路打点 |
+| `query_rewriter.py` | HyDE 查询改写，改写记录落库 |
+| `reranker.py` | cross-encoder 重排序，带 Redis 缓存 |
+| `evaluation.py` | Hit Rate / MRR / NDCG 指标 + 消融实验框架 |
+| `test_set.py` | 20 条中文测试集（问题 + 期望源文件） |
+
+### Agent 层（backend/app/agent/）
+
+| 模块 | 职责 |
+|------|------|
+| `harness.py` | ReAct 循环引擎，工具调度，决策日志落库 |
+| `tools.py` | 三个工具：search / explain / testgen |
+| `prompt.py` | ReAct 系统提示词（工具描述动态注入） |
+| `llm.py` | LLM 调用封装（DeepSeek / Ollama 可切换） |
+
+### API 层（backend/app/routers/）
+
+| 模块 | 职责 |
+|------|------|
+| `auth_router.py` | 注册 / 登录 / 刷新 / 登出（Redis 黑名单） |
+| `agent_router.py` | Agent 对话接口，MySQL 会话持久化 |
+| `search_router.py` | 代码检索接口（hybrid / HyDE / rerank 可选） |
+| `upload_router.py` | 文件上传 + 索引 |
+
+### 基础设施
+
+| 模块 | 职责 |
+|------|------|
+| `models/` | ORM 模型（users / conversations / agent_logs / retrieval_logs 等） |
+| `auth.py` | JWT 签发验证 + bcrypt 密码哈希 |
+| `middleware.py` | Redis 滑动窗口限流 |
+| `services/` | 业务服务层（会话历史保存与恢复） |
 ## 评估数据
 
 基于 20 条测试集的消融实验（Hit Rate / MRR / NDCG）：
