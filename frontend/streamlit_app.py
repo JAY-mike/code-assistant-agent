@@ -1,11 +1,12 @@
 """Streamlit 前端：登录 + Agent 对话 + 检索 + 文件上传"""
 
+import os
 import json
 import time
 import requests
 import streamlit as st
 
-API_BASE = "http://127.0.0.1:8000/api"
+API_BASE = os.environ.get("API_BASE", "http://127.0.0.1:8000/api")
 
 # ---------- 会话状态初始化 ----------
 if "access_token" not in st.session_state:
