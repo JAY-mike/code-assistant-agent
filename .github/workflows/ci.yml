@@ -19,7 +19,9 @@ jobs:
       - name: Install dependencies
         run: |
           cd backend
-          pip install fastapi bcrypt python-jose[cryptography] pytest sqlalchemy pydantic-settings
+          pip install fastapi uvicorn sqlalchemy aiomysql pymysql redis \
+            python-jose[cryptography] bcrypt pydantic pydantic-settings python-dotenv \
+            httpx pytest
 
       - name: Run unit tests
         run: |
