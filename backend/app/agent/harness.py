@@ -39,6 +39,10 @@ class AgentHarness:
         self.session_id = session_id
         self.conversation_history = []  # 多轮对话：保存历史 Q&A
 
+    def restore_history(self, history: list[dict]):
+        """从数据库恢复对话历史"""
+        self.conversation_history = history
+
     async def _log_step(self, step: int, thought: str,
                         action_name: str = None, action_args: str = None,
                         observation: str = None):
@@ -59,6 +63,26 @@ class AgentHarness:
                 await session.commit()
         except Exception as e:
             log.warning("Failed to log agent step: %s", e)
+
+    def _schedule_log(self, step: int, thought: str,
+                      action_name: str = None, action_args: str = None,
+                      observation: str = None):
+        """在合适的上下文里调度异步日志：有事件循环用 create_task，否则 asyncio.run"""
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            # 后台线程，没有运行中的事件循环 → 独立跑
+            asyncio.run(self._log_step(
+                step=step, thought=thought,
+                action_name=action_name, action_args=action_args,
+                observation=observation,
+            ))
+        else:
+            loop.create_task(self._log_step(
+                step=step, thought=thought,
+                action_name=action_name, action_args=action_args,
+                observation=observation,
+            ))
 
     def get_tool_description(self) -> str:
         return build_tool_descriptions(self.tools)
@@ -103,33 +127,33 @@ class AgentHarness:
                     messages.append({"role": "user", "content": f"Observation: {obs}"})
 
                     # 记录决策日志（异步，不阻塞循环）
-                    asyncio.create_task(self._log_step(
+                    self._schedule_log(
                         step=step + 1,
                         thought=response,
                         action_name=action["name"],
                         action_args=json.dumps(action.get("args", {})),
                         observation=obs,
-                    ))
+                    )
 
                     continue
                 except (json.JSONDecodeError, KeyError) as e:
                     messages.append({"role": "user", "content": f"Observation: JSON parse error: {e}"})
 
-                    asyncio.create_task(self._log_step(
+                    self._schedule_log(
                         step=step + 1, thought=response,
                         action_name="parse_error",
                         action_args=str(e),
                         observation=None,
-                    ))
+                    )
 
                     continue
 
             # 没有 Action JSON → 认为是最终答案
-            asyncio.create_task(self._log_step(
+            self._schedule_log(
                 step=step + 1, thought=response,
                 action_name="answer", action_args=None,
                 observation=None,
-            ))
+            )
 
 
             # 保存本轮问答到历史（供下一轮使用）

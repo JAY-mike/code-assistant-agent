@@ -64,35 +64,48 @@
 
 
 
-"""多轮对话测试"""
+# """多轮对话测试"""
 
-import asyncio
-from app.agent.harness import AgentHarness
-from app.database import engine, Base
-from app.models.agent_log import AgentLog
-
-
-async def main():
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-
-    harness = AgentHarness(session_id="multi_turn_test")
-
-    # 第一轮
-    q1 = "TinyDB 怎么把数据存到磁盘上的？"
-    print(f"\n[Round 1] {q1}")
-    a1 = harness.run(q1)
-    print(f"回答: {a1[:200]}...")
-
-    # 第二轮（依赖第一轮的上下文）
-    q2 = "那它查询数据又是怎么实现的？"
-    print(f"\n[Round 2] {q2}")
-    a2 = harness.run(q2)
-    print(f"回答: {a2[:200]}...")
-
-    await asyncio.sleep(0.5)
-    await engine.dispose()
+# import asyncio
+# from app.agent.harness import AgentHarness
+# from app.database import engine, Base
+# from app.models.agent_log import AgentLog
 
 
-if __name__ == "__main__":
-    asyncio.run(main())
+# async def main():
+#     async with engine.begin() as conn:
+#         await conn.run_sync(Base.metadata.create_all)
+
+#     harness = AgentHarness(session_id="multi_turn_test")
+
+#     # 第一轮
+#     q1 = "TinyDB 怎么把数据存到磁盘上的？"
+#     print(f"\n[Round 1] {q1}")
+#     a1 = harness.run(q1)
+#     print(f"回答: {a1[:200]}...")
+
+#     # 第二轮（依赖第一轮的上下文）
+#     q2 = "那它查询数据又是怎么实现的？"
+#     print(f"\n[Round 2] {q2}")
+#     a2 = harness.run(q2)
+#     print(f"回答: {a2[:200]}...")
+
+#     await asyncio.sleep(0.5)
+#     await engine.dispose()
+
+
+# if __name__ == "__main__":
+#     asyncio.run(main())
+
+
+from app.config import settings
+from app.auth import SECRET_KEY, decode_token
+print("SECRET_KEY:", SECRET_KEY)
+print("settings.JWT_SECRET:", settings.JWT_SECRET)
+
+# 用你刚才拿到的 token 测试
+token = "粘贴你的access_token"
+try:
+    print(decode_token(token))
+except Exception as e:
+    print("decode error:", e)

@@ -40,6 +40,9 @@ class Settings(BaseSettings):
     LLM_MODEL: str = "deepseek-v4-flash"
     LLM_API_KEY: str = "sk-3e43d66aee4f42f3b6b5505b04a4200d"
     # LLM_MODEL: str = "gemma:7b"    
+    # JWT
+    JWT_SECRET: str = "code-assistant-agent-jwt-secret-change-in-production"
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"

@@ -5,6 +5,11 @@ from fastapi import FastAPI
 from app.config import settings
 from app.database import engine, Base
 from app.logger import log
+from app.routers.auth_router import router as auth_router
+from app.routers.agent_router import router as agent_router
+from app.routers.search_router import router as search_router
+from app.routers.upload_router import router as upload_router
+
 
 
 @asynccontextmanager
@@ -28,7 +33,10 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title=settings.APP_NAME, lifespan=lifespan)
-
+app.include_router(auth_router, prefix="/api")
+app.include_router(agent_router, prefix="/api")
+app.include_router(search_router, prefix="/api")
+app.include_router(upload_router, prefix="/api")
 
 @app.get("/")
 async def root():
