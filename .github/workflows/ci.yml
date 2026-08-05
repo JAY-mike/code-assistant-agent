@@ -19,7 +19,7 @@ jobs:
       - name: Install dependencies
         run: |
           cd backend
-          pip install bcrypt python-jose[cryptography] pytest sqlalchemy pydantic-settings
+          pip install fastapi bcrypt python-jose[cryptography] pytest sqlalchemy pydantic-settings
 
       - name: Run unit tests
         run: |
