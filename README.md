@@ -157,13 +157,13 @@ streamlit run streamlit_app.py
 
 | 配置 | Hit Rate | MRR | NDCG | 延迟(ms) |
 |------|----------|-----|------|----------|
-| dense_only | 0.80 | 0.70 | 0.69 | 13 |
-| sparse_only | 0.80 | 0.70 | 0.69 | 0.3 |
-| hybrid_baseline | 0.80 | 0.70 | 0.69 | 0.2 |
-| hybrid + HyDE | 0.85 | 0.72 | 0.72 | 7600 |
-| hybrid + HyDE + rerank | 0.75 | 0.59 | 0.57 | 9000 |
+| dense_only | 0.95 | 0.60 | 0.60 | 13 |
+| sparse_only | 0.95 | 0.60 | 0.60 | 0.3 |
+| hybrid_baseline | 0.95 | 0.60 | 0.60 | 0.4 |
+| hybrid + HyDE | 0.95 | 0.60 | 0.60 | 3600 |
+| hybrid + HyDE + rerank | 0.85 | 0.49 | 0.48 | 3900 |
 
-**结论**：HyDE 查询改写显著提升召回率；reranker 在代码场景下降（模型在网页搜索领域训练）；hybrid 融合在接近零延迟下持平单路。
+**结论**：基础混合检索 Hit Rate 达 0.95，双路结果高度重合时 RRF/HyDE 无额外增量；reranker 在代码场景下降（模型在网页搜索领域训练），说明组件需按领域验证而非无脑叠加。
 
 ## API 概览
 
