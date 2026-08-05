@@ -12,4 +12,7 @@ env/
 1.png
 *.html
 *.css
+*.log
 .frontend
+.reasonix/
+archive/
