@@ -3,7 +3,7 @@
 import asyncio
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from app.rag.dense_retriever import DenseRetriever
+from app.rag.dense_retriever import DenseRetriever, SYSTEM_CORPUS
 from app.rag.sparse_retriever import SparseRetriever
 from app.rag.fusion import rrf, async_hybrid_search
 from app.rag.reranker import Reranker
@@ -47,13 +47,14 @@ async def search(
         query = await rewrite(query, strategy="hyde")
 
     if req.use_hybrid:
-        # 复用已有的 async_hybrid_search（含日志打点）
+        # 复用已有的 async_hybrid_search（含日志打点），默认只搜系统语料
         fused = await async_hybrid_search(
-            query, dense, sparse, top_n=req.top_k
+            query, dense, sparse, top_n=req.top_k,
+            dense_where=SYSTEM_CORPUS,
         )
     else:
         dense_results = await asyncio.to_thread(
-            dense.search, query, req.top_k
+            dense.search, query, req.top_k, SYSTEM_CORPUS
         )
         fused = dense_results
 

@@ -1,3 +1,4 @@
+import os
 from pydantic_settings import BaseSettings
 
 
@@ -38,14 +39,33 @@ class Settings(BaseSettings):
     # LLM_API_ENDPOINT: str = "http://localhost:11434/api/chat"  # Ollama
     LLM_API_ENDPOINT: str = "https://api.deepseek.com/v1/chat/completions"
     LLM_MODEL: str = "deepseek-v4-flash"
-    LLM_API_KEY: str = "sk-3e43d66aee4f42f3b6b5505b04a4200d"
+    LLM_API_KEY: str = ""
     # LLM_MODEL: str = "gemma:7b"    
     # JWT
-    JWT_SECRET: str = "code-assistant-agent-jwt-secret-change-in-production"
+    JWT_SECRET: str = ""  # 从 .env 读取，禁止硬编码
 
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"
+
+    def _validate_secrets(self):
+        """启动时校验密钥，缺失则拒绝启动，避免用空密钥签发 JWT"""
+        if not self.LLM_API_KEY:
+            raise ValueError(
+                "LLM_API_KEY 未配置。请在 .env 中设置，或通过环境变量传入。"
+                "禁止用空密钥运行。"
+            )
+        if len(self.JWT_SECRET) < 32:
+            raise ValueError(
+                "JWT_SECRET 未配置或太短（至少 32 字符）。请在 .env 中设置，"
+                "可用: python -c \"import secrets; print(secrets.token_hex(32))\" 生成。"
+            )
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        # 测试场景可通过环境变量跳过校验（比如 CI 用固定测试密钥，或纯逻辑单测）
+        if not os.environ.get("SKIP_SECRET_VALIDATION"):
+            self._validate_secrets()
 
 
 settings = Settings()

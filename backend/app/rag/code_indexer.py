@@ -7,6 +7,7 @@ from pathlib import Path
 from app.config import settings
 from app.rag.chunker import CodeChunker
 from app.rag.dense_retriever import DenseRetriever
+from app.rag.sparse_retriever import SparseRetriever
 from app.database import async_session_factory
 from app.models.index_version import IndexVersion
 from app.logger import log
@@ -108,11 +109,19 @@ async def create_index():
         return
     log.info("Created %d chunks", len(chunks))
 
+    # 给系统语料打标，便于检索时与用户上传内容隔离
+    for c in chunks:
+        c["metadata"]["source_type"] = "system"
+
     try:
         retriever = DenseRetriever()
         retriever.delete_collection()
         retriever = DenseRetriever()
         retriever.add_chunks(chunks)
+
+        # 从同一批 chunks 构建 BM25 稀疏索引并缓存到 Redis
+        sparse = SparseRetriever.from_chunks(chunks)
+        log.info("BM25 index built with %d chunks", sparse.count())
 
         await save_version_record(
             strategy=settings.CHUNK_STRATEGY,
@@ -127,7 +136,7 @@ async def create_index():
         log.error("Failed to build index: %s", e)
         return
 
-    return retriever
+    return {"dense": retriever, "sparse": sparse}
 
 
 async def rebuild_index():

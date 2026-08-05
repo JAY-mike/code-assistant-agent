@@ -9,6 +9,7 @@ from app.routers.auth_router import router as auth_router
 from app.routers.agent_router import router as agent_router
 from app.routers.search_router import router as search_router
 from app.routers.upload_router import router as upload_router
+from app.middleware import RateLimitMiddleware
 
 
 
@@ -33,6 +34,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title=settings.APP_NAME, lifespan=lifespan)
+app.add_middleware(RateLimitMiddleware, rate_limit=60, window_seconds=60)
 app.include_router(auth_router, prefix="/api")
 app.include_router(agent_router, prefix="/api")
 app.include_router(search_router, prefix="/api")

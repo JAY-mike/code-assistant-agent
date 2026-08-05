@@ -1,4 +1,4 @@
-"""Redis 滑动窗口限流中间件"""
+"""Redis 滑动窗口限流中间件（基于 ZSET）"""
 
 import time
 from fastapi import Request, HTTPException
@@ -8,7 +8,12 @@ from app.logger import log
 
 
 class RateLimitMiddleware(BaseHTTPMiddleware):
-    """滑动窗口限流：每用户每分钟最多 rate_limit 次请求"""
+    """滑动窗口限流：每客户端在 window_seconds 内最多 rate_limit 次请求
+
+    用 Redis ZSET 实现真正的滑动窗口：每个请求时间戳作为一个 member，
+    每次检查时删除窗口外的旧记录，统计窗口内的数量。
+    相比固定窗口（time()//window），滑动窗口不会在窗口边界产生突刺。
+    """
 
     def __init__(self, app, rate_limit: int = 60, window_seconds: int = 60):
         super().__init__(app)
@@ -29,10 +34,22 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             log.warning("Redis unavailable, rate limiting disabled: %s", e)
 
     def _client_key(self, request: Request) -> str:
-        """从请求里识别客户端：优先用用户，其次用 IP"""
-        user = request.state.user if hasattr(request.state, "user") else None
-        if user:
-            return f"user:{user.id}"
+        """识别客户端：优先从 JWT 解析用户，否则退回 IP。
+
+        注意：中间件在鉴权依赖（get_current_user）之前运行，拿不到
+        request.state.user，所以这里自己解析 Authorization 头。
+        """
+        auth = request.headers.get("Authorization", "")
+        if auth.startswith("Bearer "):
+            token = auth[len("Bearer "):]
+            try:
+                from app.auth import decode_token
+                payload = decode_token(token)
+                if payload.get("type") == "access":
+                    return f"user:{payload.get('sub', 'unknown')}"
+            except Exception:
+                # token 无效或过期，退回 IP 限流
+                pass
         return f"ip:{request.client.host}"
 
     async def dispatch(self, request: Request, call_next):
@@ -44,13 +61,17 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         client = self._client_key(request)
-        window_start = int(time.time() // self.window_seconds)
-        key = f"ratelimit:{client}:{window_start}"
+        key = f"ratelimit:{client}"
 
         try:
-            count = self.redis.incr(key)
-            if count == 1:
-                self.redis.expire(key, self.window_seconds + 1)
+            now = time.time()
+            window_start = now - self.window_seconds
+            pipeline = self.redis.pipeline()
+            pipeline.zremrangebyscore(key, 0, window_start)  # 删窗口外旧记录
+            pipeline.zadd(key, {f"{now:.6f}": now})          # 加当前请求
+            pipeline.zcard(key)                              # 统计窗口内数量
+            pipeline.expire(key, self.window_seconds + 1)
+            _, _, count, _ = pipeline.execute()
 
             if count > self.rate_limit:
                 raise HTTPException(status_code=429, detail="Rate limit exceeded")

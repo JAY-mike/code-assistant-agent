@@ -32,8 +32,14 @@ services:
       - "8000:8000"
     environment:
       MYSQL_HOST: mysql
+      MYSQL_PORT: 3306
+      MYSQL_USER: root
+      MYSQL_PASSWORD: 123456
+      MYSQL_DATABASE: code_assistant
       REDIS_HOST: redis
+      REDIS_PORT: 6379
       LLM_API_KEY: ${LLM_API_KEY}
+      JWT_SECRET: ${JWT_SECRET}
     depends_on:
       mysql:
         condition: service_healthy

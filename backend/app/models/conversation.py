@@ -1,15 +1,21 @@
 import datetime
 from datetime import UTC
 
-from sqlalchemy import Column , Integer , String , DateTime , JSON , Text
+from sqlalchemy import Column, Integer, String, DateTime, JSON, Text, UniqueConstraint
 from app.database import Base
+
 
 class Conversation(Base):
     """一次对话session"""
     __tablename__ = "conversations"
+    __table_args__ = (
+        # 同一用户 + 同一 session_id 唯一，防止并发创建重复会话
+        UniqueConstraint("user_id", "session_id", name="uq_conversation_user_session"),
+    )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    session_id = Column(String(64), unique=True, nullable=False, index=True, comment="会话ID")
+    user_id = Column(Integer, nullable=False, index=True, comment="所属用户ID")
+    session_id = Column(String(64), nullable=False, index=True, comment="会话ID")
     created_at = Column(DateTime, default=datetime.datetime.utcnow, comment="创建时间")
     updated_at = Column(
         DateTime,
@@ -18,11 +24,13 @@ class Conversation(Base):
         comment="最后更新时间",
     )
 
+
 class Message(Base):
     """对话中的单条消息"""
     __tablename__ = "messages"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, nullable=False, index=True, comment="所属用户ID")
     session_id = Column(String(64), nullable=False, index=True, comment="所属会话ID")
     role = Column(String(16), nullable=False, comment="角色: user / assistant")
     content = Column(Text, nullable=False, comment="消息内容")

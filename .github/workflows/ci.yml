@@ -9,6 +9,29 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: 123456
+          MYSQL_DATABASE: code_assistant
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h localhost"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd="redis-cli ping"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+
     steps:
       - uses: actions/checkout@v4
 
@@ -23,7 +46,23 @@ jobs:
             python-jose[cryptography] bcrypt pydantic pydantic-settings python-dotenv \
             httpx pytest
 
+      - name: Wait for services
+        run: |
+          python -c "
+          import time, socket
+          for host, port in [('127.0.0.1', 3306), ('127.0.0.1', 6379)]:
+              for _ in range(30):
+                  try:
+                      socket.create_connection((host, port), timeout=1)
+                      print(f'{host}:{port} ready')
+                      break
+                  except OSError:
+                      time.sleep(1)
+              else:
+                  raise SystemExit(f'{host}:{port} not ready')
+          "
+
       - name: Run unit tests
         run: |
           cd backend
-          python -m pytest tests/test_auth.py -v
+          python -m pytest tests/test_auth.py tests/test_auth_api.py tests/test_fusion.py -v

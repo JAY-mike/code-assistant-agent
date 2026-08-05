@@ -84,6 +84,7 @@ class Reranker:
         k_sparse: int = 10,
         k_rrf: int = 60,
         top_n: int = 3,
+        dense_where: dict | None = None,
     ) -> list[dict]:
         from app.rag.fusion import hybrid_search
 
@@ -91,6 +92,7 @@ class Reranker:
             query, dense_retriever, sparse_retriever,
             k_dense=k_dense, k_sparse=k_sparse,
             k_rrf=k_rrf, top_n=top_n * 2,
+            dense_where=dense_where,
         )
 
         return self.rerank(query, result["results"], top_n=top_n)

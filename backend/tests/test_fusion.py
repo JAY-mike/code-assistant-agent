@@ -2,6 +2,11 @@
 
 import sys
 import os
+
+# 必须在 import app 之前设置：避免触发 config 密钥校验
+os.environ.setdefault("SKIP_SECRET_VALIDATION", "1")
+os.environ.setdefault("JWT_SECRET", "test-secret-only-for-ci-0123456789abcdef")
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.rag.fusion import rrf

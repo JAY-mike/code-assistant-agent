@@ -2,6 +2,11 @@
 
 import sys
 import os
+
+# 必须在 import app 之前设置：纯逻辑测试不需要真实密钥
+os.environ.setdefault("SKIP_SECRET_VALIDATION", "1")
+os.environ.setdefault("JWT_SECRET", "test-secret-only-for-ci-0123456789abcdef")
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.auth import hash_password, verify_password

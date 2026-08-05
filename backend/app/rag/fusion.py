@@ -42,10 +42,11 @@ def hybrid_search(
     k_sparse: int = 10,
     k_rrf: int = 60,
     top_n: int = 5,
+    dense_where: dict | None = None,
 ) -> dict:
     start = time.time()
 
-    dense_results = dense_retriever.search(query, k=k_dense)
+    dense_results = dense_retriever.search(query, k=k_dense, where=dense_where)
     sparse_results = sparse_retriever.search(query, k=k_sparse)
 
     log.info("Dense: %d results, Sparse: %d results", len(dense_results), len(sparse_results))
@@ -71,6 +72,7 @@ async def async_hybrid_search(
     k_sparse: int = 10,
     k_rrf: int = 60,
     top_n: int = 5,
+    dense_where: dict | None = None,
 ) -> list[dict[str, Any]]:
     """异步混合检索：用 to_thread 避免阻塞事件循环"""
     result = await asyncio.to_thread(
@@ -78,6 +80,7 @@ async def async_hybrid_search(
         query, dense_retriever, sparse_retriever,
         k_dense=k_dense, k_sparse=k_sparse,
         k_rrf=k_rrf, top_n=top_n,
+        dense_where=dense_where,
     )
 
     try:

@@ -3,6 +3,7 @@
 import os
 import json
 import time
+import uuid
 import requests
 import streamlit as st
 
@@ -15,6 +16,8 @@ if "refresh_token" not in st.session_state:
     st.session_state.refresh_token = None
 if "messages" not in st.session_state:
     st.session_state.messages = []
+if "session_id" not in st.session_state:
+    st.session_state.session_id = None
 
 
 def auth_headers():
@@ -36,6 +39,7 @@ if st.session_state.access_token:
         st.session_state.access_token = None
         st.session_state.refresh_token = None
         st.session_state.messages = []
+        st.session_state.session_id = None
         st.rerun()
 else:
     username = st.sidebar.text_input("用户名")
@@ -47,6 +51,9 @@ else:
             data = resp.json()
             st.session_state.access_token = data["access_token"]
             st.session_state.refresh_token = data["refresh_token"]
+            # 每个用户/每次登录生成独立会话，避免跨用户共享历史
+            st.session_state.session_id = uuid.uuid4().hex[:16]
+            st.session_state.messages = []
             st.sidebar.success("登录成功!")
             st.rerun()
         else:
@@ -79,7 +86,7 @@ with tab_chat:
             with st.spinner("Agent 思考中..."):
                 resp = requests.post(
                     f"{API_BASE}/agent/chat",
-                    json={"message": prompt, "session_id": "streamlit_demo"},
+                    json={"message": prompt, "session_id": st.session_state.session_id or "default"},
                     headers=auth_headers(),
                     timeout=120,
                 )

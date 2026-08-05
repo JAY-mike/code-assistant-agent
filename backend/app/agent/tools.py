@@ -2,7 +2,7 @@
 
 import json
 from app.agent.tool_base import Tool
-from app.rag.dense_retriever import DenseRetriever
+from app.rag.dense_retriever import DenseRetriever, SYSTEM_CORPUS
 from app.rag.sparse_retriever import SparseRetriever
 from app.rag.fusion import rrf
 from app.rag.reranker import Reranker
@@ -21,8 +21,8 @@ class SearchCode(Tool):
         dense = DenseRetriever()
         sparse = SparseRetriever.from_redis()
 
-        dense_results = dense.search(query , k =10)
-        sparse_results = sparse.search(query , k =10)
+        dense_results = dense.search(query, k=10, where=SYSTEM_CORPUS)
+        sparse_results = sparse.search(query, k=10)
 
         if dense_results and sparse_results:
             fused = rrf([dense_results, sparse_results], top_n=5)
@@ -50,7 +50,7 @@ class ExplainCode(Tool):
             return "Error: target is required"
 
         dense = DenseRetriever()
-        results = dense.search(target, k=3)
+        results = dense.search(target, k=3, where=SYSTEM_CORPUS)
         if not results:
             return f"Could not find code related to '{target}'"
 
@@ -70,7 +70,7 @@ class GenerateTest(Tool):
             return "Error: target is required"
 
         dense = DenseRetriever()
-        results = dense.search(target, k=3)
+        results = dense.search(target, k=3, where=SYSTEM_CORPUS)
         if not results:
             return f"Could not find code related to '{target}'"
 

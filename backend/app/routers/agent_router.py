@@ -28,19 +28,21 @@ async def chat(
     req: ChatRequest,
     current_user: User = Depends(get_current_user),
 ):
-    # 1. 确保会话记录存在
-    await get_or_create_conversation(req.session_id)
+    user_id = current_user.id
 
-    # 2. 从 MySQL 恢复历史
-    history = await load_history(req.session_id)
+    # 1. 确保会话记录存在（按用户隔离）
+    await get_or_create_conversation(user_id, req.session_id)
+
+    # 2. 从 MySQL 恢复历史（只查当前用户的）
+    history = await load_history(user_id, req.session_id)
     harness = AgentHarness(session_id=req.session_id)
     harness.restore_history(history)
 
     # 3. 运行 Agent
     answer = await asyncio.to_thread(harness.run, req.message)
 
-    # 4. 保存本轮消息
-    await save_message(req.session_id, "user", req.message)
-    await save_message(req.session_id, "assistant", answer)
+    # 4. 保存本轮消息（归属当前用户）
+    await save_message(user_id, req.session_id, "user", req.message)
+    await save_message(user_id, req.session_id, "assistant", answer)
 
     return ChatResponse(answer=answer, session_id=req.session_id)

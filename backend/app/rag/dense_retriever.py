@@ -13,6 +13,10 @@ from app.logger import log
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 
+# 检索范围常量：系统语料 / 用户上传
+SYSTEM_CORPUS = {"source_type": "system"}
+USER_CORPUS = {"source_type": "user_upload"}
+
 
 class DenseRetriever:
     """基于 Chroma 的稠密向量检索器"""
@@ -58,11 +62,20 @@ class DenseRetriever:
         except Exception as e:
             raise RuntimeError(f"Failed to initialize Chroma at {self.persist_dir}: {e}")
 
-    def search(self, query: str, k: int = 5) -> list[dict[str, Any]]:
+    def search(self, query: str, k: int = 5,
+               where: dict | None = None) -> list[dict[str, Any]]:
+        """稠密检索。where 是 Chroma metadata filter，用于隔离检索范围。
+
+        示例：
+          search("query")                          # 搜全部（默认）
+          search("query", where={"source_type": "system"})
+          search("query", where={"owner_id": 1, "source_type": "user_upload"})
+        """
         if not query or not query.strip():
             return []
 
-        cache_key = f"dense_search:{query.strip()}:{k}"
+        where_str = json.dumps(where, sort_keys=True) if where else "all"
+        cache_key = f"dense_search:{query.strip()}:{k}:{where_str}"
         if self.redis_client:
             try:
                 cached = self.redis_client.get(cache_key)
@@ -72,7 +85,10 @@ class DenseRetriever:
                 pass
 
         try:
-            docs = self.db.similarity_search(query, k=k)
+            if where:
+                docs = self.db.similarity_search(query, k=k, filter=where)
+            else:
+                docs = self.db.similarity_search(query, k=k)
         except Exception as e:
             log.error("Search failed: %s", e)
             return []
@@ -82,6 +98,7 @@ class DenseRetriever:
                 "text": doc.page_content,
                 "source": doc.metadata.get("source", "unknown"),
                 "chunk_index": doc.metadata.get("chunk_index", -1),
+                "owner_id": doc.metadata.get("owner_id"),
                 "score": None,
             }
             for doc in docs
@@ -98,11 +115,13 @@ class DenseRetriever:
 
         return results
 
-    def search_with_score(self, query: str, k: int = 5) -> list[dict[str, Any]]:
+    def search_with_score(self, query: str, k: int = 5,
+                          where: dict | None = None) -> list[dict[str, Any]]:
         if not query or not query.strip():
             return []
 
-        cache_key = f"dense_search_score:{query.strip()}:{k}"
+        where_str = json.dumps(where, sort_keys=True) if where else "all"
+        cache_key = f"dense_search_score:{query.strip()}:{k}:{where_str}"
         if self.redis_client:
             try:
                 cached = self.redis_client.get(cache_key)
@@ -112,7 +131,10 @@ class DenseRetriever:
                 pass
 
         try:
-            docs_with_scores = self.db.similarity_search_with_score(query, k=k)
+            if where:
+                docs_with_scores = self.db.similarity_search_with_score(query, k=k, filter=where)
+            else:
+                docs_with_scores = self.db.similarity_search_with_score(query, k=k)
         except Exception as e:
             log.error("Search with score failed: %s", e)
             return []
@@ -122,6 +144,7 @@ class DenseRetriever:
                 "text": doc.page_content,
                 "source": doc.metadata.get("source", "unknown"),
                 "chunk_index": doc.metadata.get("chunk_index", -1),
+                "owner_id": doc.metadata.get("owner_id"),
                 "score": score,
             }
             for doc, score in docs_with_scores
