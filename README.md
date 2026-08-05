@@ -8,7 +8,8 @@
 - **轻量 Agent Harness**：自研 ReAct 循环（Thought-Action-Observation），真实 LLM 决策，无需 LangGraph，代码全可控
 - **三个 Agent 工具**：search（混合检索）、explain（代码解释）、testgen（测试生成）
 - **完整评估体系**：20 条测试集 + Hit Rate / MRR / NDCG 指标 + 5 组消融实验
-- **工程化完备**：JWT 鉴权、Redis 黑名单登出、滑动窗口限流、MySQL 会话持久化、Docker 一键部署、GitHub Actions CI
+- **数据隔离**：用户会话、上传文件按 owner_id 隔离，系统语料与用户语料在检索端分离
+- **工程化完备**：JWT 鉴权 + Redis 黑名单登出、ZSET 滑动窗口限流、MySQL 会话持久化、Docker 一键部署、GitHub Actions CI（含鉴权集成测试）
 
 ## 架构
 

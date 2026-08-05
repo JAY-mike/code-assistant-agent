@@ -1,7 +1,10 @@
 """Redis 滑动窗口限流中间件（基于 ZSET）"""
 
 import time
-from fastapi import Request, HTTPException
+import uuid
+
+from fastapi import Request
+from starlette.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from app.config import settings
 from app.logger import log
@@ -68,15 +71,16 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             window_start = now - self.window_seconds
             pipeline = self.redis.pipeline()
             pipeline.zremrangebyscore(key, 0, window_start)  # 删窗口外旧记录
-            pipeline.zadd(key, {f"{now:.6f}": now})          # 加当前请求
+            pipeline.zadd(key, {uuid.uuid4().hex: now})       # 加当前请求
             pipeline.zcard(key)                              # 统计窗口内数量
             pipeline.expire(key, self.window_seconds + 1)
             _, _, count, _ = pipeline.execute()
 
             if count > self.rate_limit:
-                raise HTTPException(status_code=429, detail="Rate limit exceeded")
-        except HTTPException:
-            raise
+                return JSONResponse(
+                    status_code=429,
+                    content={"detail": "Rate limit exceeded"},
+                )
         except Exception as e:
             log.warning("Rate limit check failed: %s", e)
 

@@ -141,7 +141,7 @@ A: 两个原因。第一，JWT 是无状态的，服务端不需要存 session�
 
 **Q: 你做了哪些并发方面的考虑？**
 
-A: 两点落地：第一，Redis 滑动窗口限流中间件，用 `INCR + EXPIRE` 对每个用户（未登录用 IP）每分钟限 60 次请求，防止打满 DeepSeek API 的频率限制。Redis 挂了自动降级跳过限流，不影响可用性。第二，Agent 的同步检索调用用 `asyncio.to_thread` 扔到线程池，不阻塞 FastAPI 事件循环。连接池参数和请求耗时监控中间件是规划中的增强项。
+A: 两点落地：第一，Redis 滑动窗口限流中间件，用 ZSET 实现真正的滑动窗口——每个请求时间戳作为一个 member，删除窗口外的旧记录后统计窗口内数量，对每个用户（从 JWT 解析）每分钟限 60 次请求，防止打满 DeepSeek API 的频率限制。Redis 挂了自动降级跳过限流，不影响可用性。第二，Agent 的同步检索调用用 `asyncio.to_thread` 扔到线程池，不阻塞 FastAPI 事件循环。
 
 **Q: LLM 调用层是怎么封装的？**
 
@@ -525,7 +525,7 @@ A: `SET lock_key uuid NX EX 10`——如果 key 不存在则设置值（NX），
 
 A: 三件事：
 1. **检索结果缓存**：同一 query 短时间内多次请求，直接从 Redis 返回，跳过 embedding + Chroma，TTL 5 分钟
-2. **API 限流**：用 INCR + EXPIRE 做滑动窗口计数，每个用户（或 IP）每分钟最多 60 次
+2. **API 限流**：用 Redis ZSET 做滑动窗口限流，每个用户（或 IP）每分钟最多 60 次。ZSET 里存每个请求的时间戳，删窗口外记录后 zcard 统计，比固定窗口（INCR+EXPIRE）更平滑，不会在窗口边界产生突刺
 3. **JWT 黑名单**：登出时把 token 存 Redis 标记为黑名单，TTL = 剩余有效期
 
 ---
@@ -546,14 +546,28 @@ A: Docker 管理单个容器。Compose 管理多个容器组成的"服务组"—
 
 **Q: 你部署时遇到过什么坑？**
 
-A: 三个：
+A: 六个：
 1. **容器内 localhost 不通**：frontend 里写死 `127.0.0.1:8000`，在容器里指向前端自己。解法是把 API_BASE 改成环境变量，compose 里注入 `http://backend:8000/api`。
 2. **mysqlclient 编译失败**：slim 镜像缺 pkg-config 和 libmysqlclient-dev，Dockerfile 里要 apt-get 安装。
 3. **版本冲突**：chromadb 0.5 要求 bcrypt>=4.0.1，而 passlib 只兼容 bcrypt 3.x。最终抛弃 passlib，直接用 bcrypt 原生 API（hashpw/checkpw），问题消失。
+4. **Docker 里 JWT_SECRET 为空**：config 默认值被清空后，compose 只传了 LLM_API_KEY 没传 JWT_SECRET，容器里会用空密钥签发 token，比硬编码更隐蔽。解法：compose 显式传 `JWT_SECRET: ${JWT_SECRET}`，并在 config 里做启动校验——密钥缺失或太短直接拒绝启动（fail fast）。
+5. **测试污染开发数据库**：早期集成测试对默认 `code_assistant` 库执行过 `drop_all()`，把开发数据全删了。教训：测试必须用独立数据库（conftest 里固定 `MYSQL_DATABASE=code_assistant_test`），并设置 `SKIP_SECRET_VALIDATION` 跳过真实密钥校验。
+6. **API Key 泄露进 Git 历史**：DeepSeek key 曾明文写在 config.py 里提交过。必须轮换 key（旧 key 即使删除代码引用仍有效），不能只删代码里的引用。
+
+**Q: 测试里异步数据库操作怎么处理？**
+
+A: 遇到过 `async fixture` 依赖 pytest-asyncio、以及跨事件循环复用 aiomysql 连接两个问题。正解是用 Starlette TestClient 的 `portal.call()`——在同步 fixture 里通过同一个事件循环执行异步建表/删表：
+```python
+with TestClient(app) as client:
+    client.portal.call(_create_tables)
+    yield client
+    client.portal.call(_drop_tables)
+```
+这样建表、请求、删表都在同一个事件循环里，不会出现"连接属于另一个 loop"的错误。
 
 **Q: CI/CD 的核心流程是什么？**
 
-A: CI（持续集成）：代码 push 后自动跑测试、lint、构建镜像，确保新代码不破坏已有功能。CD（持续部署）：通过测试后自动部署到服务器。我项目里用 GitHub Actions 实现 CI——push 到 main 触发，装依赖后跑 pytest 单元测试（密码哈希模块），通过才算绿。这个流程保证每次提交不会引入回归。
+A: CI（持续集成）：代码 push 后自动跑测试、lint、构建镜像，确保新代码不破坏已有功能。CD（持续部署）：通过测试后自动部署到服务器。我项目里用 GitHub Actions 实现 CI——push 到 main 触发，起 MySQL 和 Redis services，装依赖后跑 pytest（密码哈希单测 + 鉴权 API 集成测试 + RRF 融合单测），覆盖注册/登录/刷新/登出/黑名单/401 全链路，通过才算绿。
 
 ---
 
@@ -595,11 +609,15 @@ A: 这是我们实测到的——同一个问题用 temperature 0.3 跑两次，
 
 **Q: 用户上传文件你怎么处理？**
 
-A: 当前实现了代码/文本类文件（.py / .js / .md / .txt）的上传：校验扩展名 → 读取 UTF-8 内容 → 复用已有的 chunker 分块 → embedding 存进向量库，并给 chunk 打上 `source_type="user_upload"` 标记。**上传后走的是和主仓库完全相同的 RAG 管道**——不单独写解析逻辑，只是多了一步"文件读入"。这样加新格式只需加一个读取 parser，核心 RAG 代码零改动，体现了系统可扩展性。
+A: 当前实现了代码/文本类文件（.py / .js / .md / .txt）的上传：校验扩展名 → 读取 UTF-8 内容 → 复用已有的 chunker 分块 → embedding 存进向量库，并给 chunk 打上 `source_type="user_upload"` 和 `owner_id=当前用户` 两个元数据标记。**上传后走的是和主仓库完全相同的 RAG 管道**——不单独写解析逻辑，只是多了一步"文件读入"。这样加新格式只需加一个读取 parser，核心 RAG 代码零改动，体现了系统可扩展性。同时 owner_id 标记让每个用户的上传内容在检索端隔离，互不可见。
 
 **Q: 上传的文件和主仓库的索引是怎么隔离和合并的？**
 
-A: 当前实现里共用一个向量库，靠 metadata 的 `source_type` 字段区分来源（`tinydb/xxx.py` 是主仓库、`upload/xxx.py` 是用户文件），检索时也可以通过这个字段过滤。设计上预留了独立 collection（`user_upload`）的方案——如果量大了，把用户文件单独存一个 collection，检索时双 collection 并查再合并。
+A: 三层隔离：
+1. **系统 vs 用户**：系统 TinyDB 语料打 `source_type="system"` 标，用户上传打 `source_type="user_upload"` 标。search 接口和 Agent 工具默认只搜系统语料（`where={"source_type":"system"}`），用户上传不进主检索链路。
+2. **用户 vs 用户**：上传 chunk 额外写入 `owner_id=current_user.id`。检索用户上传内容时用 Chroma metadata filter `{"source_type":"user_upload","owner_id":N}`，在检索端就过滤掉其他用户的内容，而不是返回后再过滤。这是防止越权的关键。
+3. **接口隔离**：搜系统代码走 `/api/search`，搜自己的上传走 `/api/upload/search`（服务端强制 owner_id），两条链路互不交叉。
+底层共用一个向量库，靠 metadata 区分。设计上预留了独立 collection 的方案——如果量大了再拆。
 
 **Q: 为什么要做文件上传这个功能？**
 

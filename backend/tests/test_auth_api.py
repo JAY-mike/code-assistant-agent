@@ -6,22 +6,6 @@
 依赖 CI 提供的 MySQL + Redis services（见 .github/workflows/ci.yml）。
 """
 
-import os
-
-# 必须在 import app 之前设置环境变量
-os.environ.setdefault("MYSQL_HOST", "127.0.0.1")
-os.environ.setdefault("MYSQL_PORT", "3306")
-os.environ.setdefault("MYSQL_USER", "root")
-os.environ.setdefault("MYSQL_PASSWORD", "123456")
-os.environ.setdefault("MYSQL_DATABASE", "code_assistant")
-os.environ.setdefault("REDIS_HOST", "127.0.0.1")
-os.environ.setdefault("REDIS_PORT", "6379")
-os.environ.setdefault("JWT_SECRET", "test-secret-only-for-ci-0123456789abcdef")
-os.environ.setdefault("LLM_API_KEY", "sk-test-only-for-ci-not-real")
-# 测试环境不需要真实 LLM Key，跳过 config 的启动校验
-os.environ.setdefault("SKIP_SECRET_VALIDATION", "1")
-
-import asyncio
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -32,20 +16,6 @@ from app.routers.auth_router import router
 # 独立 app，只挂 auth_router，不加载 chromadb 相关模块
 app = FastAPI()
 app.include_router(router, prefix="/api")
-
-
-def _run_async(coro):
-    """在同步上下文中运行异步代码"""
-    return asyncio.run(coro)
-
-
-@pytest.fixture(scope="module", autouse=True)
-def _setup_db():
-    """同步 fixture：建表 + 清理（不需要 pytest-asyncio）"""
-    _run_async(_create_tables())
-    yield
-    _run_async(_drop_tables())
-    _run_async(_dispose_engine())
 
 
 async def _create_tables():
@@ -62,9 +32,13 @@ async def _dispose_engine():
     await engine.dispose()
 
 
-@pytest.fixture()
+@pytest.fixture(scope="module")
 def client():
-    return TestClient(app)
+    with TestClient(app) as test_client:
+        test_client.portal.call(_create_tables)
+        yield test_client
+        test_client.portal.call(_drop_tables)
+        test_client.portal.call(_dispose_engine)
 
 
 class TestRegister:
