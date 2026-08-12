@@ -1,0 +1,114 @@
+[
+  {
+    "question": "项目如何让 TinyDB 和当前项目源码使用不同的公开知识库？",
+    "reference": "知识库注册表为 TinyDB 和项目源码分别定义不同的 collection_name 和 repo_path。TinyDB 使用 system_code，项目源码使用 project_code；检索和 Agent 根据 knowledge_base_id 获取对应配置。",
+    "evidence_sources": ["backend/app/rag/knowledge_bases.py"],
+    "category": "knowledge_base",
+    "difficulty": "easy"
+  },
+  {
+    "question": "为什么 BM25 索引的 Redis key 需要包含 collection 名称？",
+    "reference": "不同公开知识库使用不同的代码 chunks。Redis key 包含 collection_name 和分块策略，避免 TinyDB 与项目源码在相同分块策略下覆盖或恢复到彼此的 BM25 索引。",
+    "evidence_sources": ["backend/app/rag/sparse_retriever.py"],
+    "category": "knowledge_base",
+    "difficulty": "medium"
+  },
+  {
+    "question": "重建项目源码索引时，索引器如何避免把虚拟环境和已有索引数据写进知识库？",
+    "reference": "load_code_files 只匹配 .py 文件，并按相对路径跳过 tests、env、venv、.venv、data、.git、__pycache__ 等目录。项目源码评测集放在 backend/data 下，也不会被索引。",
+    "evidence_sources": ["backend/app/rag/code_indexer.py"],
+    "category": "indexing",
+    "difficulty": "medium"
+  },
+  {
+    "question": "系统代码 chunk 在索引时会写入哪些用于检索隔离的 metadata？",
+    "reference": "索引器为每个公开代码 chunk 写入 source_type=system 和 knowledge_base=当前知识库 ID。collection 本身隔离公开库，metadata 作为查询范围和审计信息的补充。",
+    "evidence_sources": ["backend/app/rag/code_indexer.py"],
+    "category": "indexing",
+    "difficulty": "medium"
+  },
+  {
+    "question": "Agent 为什么不让模型在一次工具调用中自行跨 TinyDB 和项目源码切换知识库？",
+    "reference": "AgentHarness 在创建时接收 knowledge_base_id，并由 build_tools 创建绑定该知识库的工具实例。工具使用绑定 collection 检索，因此知识库范围由 API 和前端在请求开始时决定，而不是由模型参数决定。",
+    "evidence_sources": ["backend/app/agent/harness.py", "backend/app/agent/tools.py"],
+    "category": "agent_safety",
+    "difficulty": "hard"
+  },
+  {
+    "question": "Function Calling 工具参数在服务端如何定义和校验？",
+    "reference": "每个 Tool 声明 Pydantic args_model。function_schema 使用 model_json_schema 生成 OpenAI-compatible function 参数 schema；执行前 validate_args 通过 model_validate 校验不可信的模型参数，再传给 execute。",
+    "evidence_sources": ["backend/app/agent/tool_base.py"],
+    "category": "function_calling",
+    "difficulty": "medium"
+  },
+  {
+    "question": "Agent 如何阻止未知工具、非法参数和同轮重复调用？",
+    "reference": "Harness 只从 tool_map 白名单查找工具，使用工具的 Pydantic 模型校验参数。每轮运行会为工具名和规范化参数生成排序后的 JSON 指纹；已执行过的指纹会被拒绝，错误作为结构化 Observation 回传模型。",
+    "evidence_sources": ["backend/app/agent/harness.py"],
+    "category": "function_calling",
+    "difficulty": "hard"
+  },
+  {
+    "question": "前端显示的 Agent 执行轨迹为什么不包含模型的原始思维链？",
+    "reference": "Harness 的 execution_trace 只保存步骤号、工具名、已校验参数、状态和截断后的 Observation。写入 AgentLog 时 thought 只使用 tool_call 或 final_answer 等摘要标记，因此可调试工具行为而不暴露或持久化原始 Chain of Thought。",
+    "evidence_sources": ["backend/app/agent/harness.py", "frontend/streamlit_app.py"],
+    "category": "observability",
+    "difficulty": "medium"
+  },
+  {
+    "question": "多知识库场景下，对话历史如何避免串库？",
+    "reference": "Agent chat API 将客户端 session_id 组合为 knowledge_base:session_id，再用这个组合键读取、创建和保存会话消息。客户端 session_id 还限制为最多 55 个字符，确保加上知识库前缀后不超过数据库字段长度。",
+    "evidence_sources": ["backend/app/routers/agent_router.py", "backend/app/models/conversation.py"],
+    "category": "conversation_isolation",
+    "difficulty": "medium"
+  },
+  {
+    "question": "DenseRetriever 的缓存 key 为什么需要包含 metadata filter？",
+    "reference": "缓存 key 包含 collection_name、query、top-k 和按 key 排序后的 where filter。这样用户上传检索中的 owner_id 与 source_type 会参与缓存隔离，避免不同用户使用相同 query 时命中彼此的缓存结果。",
+    "evidence_sources": ["backend/app/rag/dense_retriever.py"],
+    "category": "data_isolation",
+    "difficulty": "hard"
+  },
+  {
+    "question": "用户上传文件是如何在检索端按用户隔离的？",
+    "reference": "上传分块写入 source_type=user_upload 和 owner_id，并保存到独立 user_uploads collection。检索时使用 source_type 和当前 owner_id 的 Chroma filter，结果返回前还会再次检查 source 前缀和 owner_id 作为兜底。",
+    "evidence_sources": ["backend/app/rag/user_upload.py"],
+    "category": "data_isolation",
+    "difficulty": "medium"
+  },
+  {
+    "question": "混合检索的 RRF 融合如何识别两路召回中的同一个代码块？",
+    "reference": "rrf 以 source 和 chunk_index 组成二元 key。相同 key 的候选只保留一份，并累加各检索列表中按排名计算的倒数分数，最后按融合分数降序返回。",
+    "evidence_sources": ["backend/app/rag/fusion.py"],
+    "category": "retrieval",
+    "difficulty": "medium"
+  },
+  {
+    "question": "API 限流中间件如何区分登录用户和匿名请求？",
+    "reference": "中间件先尝试从 Authorization Bearer token 解码 access token，成功时用 user:sub 作为限流 key；无 token 或 token 无效时退回使用请求 IP。因为中间件先于鉴权依赖执行，不能依赖 request.state.user。",
+    "evidence_sources": ["backend/app/middleware.py"],
+    "category": "security",
+    "difficulty": "medium"
+  },
+  {
+    "question": "ZSET 滑动窗口限流的当前实现步骤是什么，仍有什么并发限制？",
+    "reference": "每次请求会删除窗口外记录、以随机 member 写入当前时间戳、统计 zcard 并设置过期时间；计数超过限制时返回 429。它使用 pipeline 减少网络往返，但检查和写入不是严格原子操作，高并发配额需要 Lua 脚本进一步保证。",
+    "evidence_sources": ["backend/app/middleware.py"],
+    "category": "security",
+    "difficulty": "hard"
+  },
+  {
+    "question": "JWT 登出为什么需要 Redis 黑名单，黑名单的过期时间如何处理？",
+    "reference": "JWT 签发后在过期前本身无法撤回。登出时将 token 写入 blacklist:token Redis key，并使用 token 剩余有效期作为 TTL；鉴权依赖先检查黑名单，命中则返回 401。",
+    "evidence_sources": ["backend/app/auth.py", "backend/app/routers/auth_router.py"],
+    "category": "security",
+    "difficulty": "medium"
+  },
+  {
+    "question": "为什么 Agent 路由使用 asyncio.to_thread 执行 Harness？",
+    "reference": "AgentHarness.run 会进行同步的 LLM 调用和工具执行。路由通过 asyncio.to_thread 将它放到线程中，避免在 FastAPI 的异步事件循环中直接阻塞，同时仍在 await 后保存本轮消息。",
+    "evidence_sources": ["backend/app/routers/agent_router.py", "backend/app/agent/harness.py"],
+    "category": "async",
+    "difficulty": "medium"
+  }
+]

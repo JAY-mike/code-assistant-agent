@@ -85,22 +85,18 @@ async def get_current_user(
         raise HTTPException(status_code=401, detail="User not found or inactive")
     return user
 
-import redis as redis_lib
+from app.clients import get_redis_client
 
 def _get_redis():
-    return redis_lib.Redis(
-        host=settings.REDIS_HOST,
-        port=settings.REDIS_PORT,
-        db=0,
-        decode_responses=True,
-        protocol=2,
-    )
+    return get_redis_client()
 
 
 def blacklist_token(token: str, expire_seconds: int):
     """把 token 加入 Redis 黑名单"""
     try:
         r = _get_redis()
+        if r is None:
+            return
         r.setex(f"blacklist:{token}", expire_seconds, "1")
     except Exception:
         pass
@@ -110,6 +106,8 @@ def is_token_blacklisted(token: str) -> bool:
     """检查 token 是否在黑名单中"""
     try:
         r = _get_redis()
+        if r is None:
+            return False
         return bool(r.exists(f"blacklist:{token}"))
     except Exception:
         return False

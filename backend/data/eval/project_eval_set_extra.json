@@ -1,0 +1,128 @@
+[
+  {
+    "question": "LLM 客户端遇到超时或 HTTP 错误时如何重试？",
+    "reference": "_post_with_retries 最多执行 max_retries 加一轮请求。超时、HTTPStatusError 或其他异常都会记录日志；未到最后一次时按 2 的 attempt 次方秒数退避，全部失败后返回 None。",
+    "evidence_sources": ["backend/app/agent/llm.py"],
+    "category": "llm_reliability",
+    "difficulty": "medium"
+  },
+  {
+    "question": "文本补全调用与工具调用在 LLM 客户端的 token 上限有什么不同？",
+    "reference": "call_llm 使用 max_tokens=512，call_llm_with_messages 和 call_llm_with_tools 使用 max_tokens=1024。三者默认 temperature 都是 0.3，工具调用额外发送 tools 和 tool_choice=auto。",
+    "evidence_sources": ["backend/app/agent/llm.py"],
+    "category": "llm_reliability",
+    "difficulty": "medium"
+  },
+  {
+    "question": "为什么工具调用响应需要保留 tool_calls，而不是只取模型的文本 content？",
+    "reference": "_parse_assistant_message 返回 role、content 和 provider 原始 tool_calls。Harness 将这条 assistant 消息和后续 role=tool 的 Observation 一起加入 messages，模型才能根据工具结果继续调用工具或生成最终答案。",
+    "evidence_sources": ["backend/app/agent/llm.py", "backend/app/agent/harness.py"],
+    "category": "function_calling",
+    "difficulty": "hard"
+  },
+  {
+    "question": "Recursive 分块器使用哪些分隔符，为什么适合代码？",
+    "reference": "RecursiveCharacterTextSplitter 依次使用空行、换行、def、class、四个空格和空格作为分隔符。它优先在较大的代码结构边界切分，并保留可配置的 chunk_size 与 chunk_overlap。",
+    "evidence_sources": ["backend/app/rag/chunker.py"],
+    "category": "chunking",
+    "difficulty": "medium"
+  },
+  {
+    "question": "Semantic 分块策略如何判断一个新的顶层代码块开始？",
+    "reference": "它逐行扫描文档，当遇到以 def 或 class 开头且缩进为 0 的行，并且当前块已有内容时，先提交当前块再开始新块。因此嵌套方法不会单独切成新的顶层语义块。",
+    "evidence_sources": ["backend/app/rag/chunker.py"],
+    "category": "chunking",
+    "difficulty": "hard"
+  },
+  {
+    "question": "Token 分块为何将字符配置除以 4 后传给 TokenTextSplitter？",
+    "reference": "TokenTextSplitter 接收 token 数而不是字符数。当前实现用 chunk_size 和 chunk_overlap 除以 4 作为近似换算，因此它是粗略的长度映射，而非精确 token 计数。",
+    "evidence_sources": ["backend/app/rag/chunker.py"],
+    "category": "chunking",
+    "difficulty": "medium"
+  },
+  {
+    "question": "HyDE 查询改写失败时如何处理，何时记录改写日志？",
+    "reference": "hyde_rewrite 调用 LLM 生成假设代码；若没有返回内容就回退原 query。rewrite 通过 to_thread 执行同步调用，只有去除首尾空白后确实发生变化时才使用 asyncio.create_task 异步保存 QueryRewrite 记录。",
+    "evidence_sources": ["backend/app/rag/query_rewriter.py"],
+    "category": "query_rewriting",
+    "difficulty": "hard"
+  },
+  {
+    "question": "搜索 API 在关闭 hybrid 模式时走什么检索路径？",
+    "reference": "当 use_hybrid 为 false 时，API 只通过 asyncio.to_thread 调用所选 collection 的 DenseRetriever.search，并传入 SYSTEM_CORPUS filter；不会调用 BM25 或 RRF 融合。",
+    "evidence_sources": ["backend/app/routers/search_router.py"],
+    "category": "retrieval",
+    "difficulty": "medium"
+  },
+  {
+    "question": "搜索 API 的 latency_ms 包含哪些阶段？",
+    "reference": "计时从请求 query 校验后开始，到形成 SearchResponse 前结束，因此包含可选 HyDE、Dense/BM25 检索、RRF、可选 rerank 以及等待这些步骤的时间。它是单次 API 路径耗时，不是并发压测的 P95/P99。",
+    "evidence_sources": ["backend/app/routers/search_router.py"],
+    "category": "observability",
+    "difficulty": "medium"
+  },
+  {
+    "question": "Reranker 加载失败时，搜索结果如何降级？",
+    "reference": "Reranker 初始化失败会把 model 设为 None。rerank 发现没有模型或没有候选时，不调用预测；它为现有候选补 rerank_score=0.0，并按原顺序返回前 top_n 条。",
+    "evidence_sources": ["backend/app/rag/reranker.py"],
+    "category": "retrieval",
+    "difficulty": "medium"
+  },
+  {
+    "question": "重排结果的 Redis 缓存 key 如何生成，缓存有效期多长？",
+    "reference": "缓存 key 使用 query 的 MD5、top_n 和 rerank 前缀组成。存在 Redis 且有结果时，重排结果用 setex 写入，TTL 为 3600 秒。",
+    "evidence_sources": ["backend/app/rag/reranker.py"],
+    "category": "caching",
+    "difficulty": "medium"
+  },
+  {
+    "question": "DenseRetriever 为什么在 add_chunks 和 delete_collection 后清理缓存？",
+    "reference": "向量数据变更后，旧的 dense_search 缓存可能与 collection 内容不一致。_clear_cache 按当前 collection 的 dense_search 前缀扫描并删除 key，避免后续查询命中重建前的结果。",
+    "evidence_sources": ["backend/app/rag/dense_retriever.py"],
+    "category": "caching",
+    "difficulty": "medium"
+  },
+  {
+    "question": "应用启动和关闭时分别处理什么数据库操作？",
+    "reference": "FastAPI lifespan 启动阶段尝试通过 engine.begin 和 Base.metadata.create_all 创建缺失表；关闭阶段调用 engine.dispose 释放数据库连接。创建失败只记录 warning，不会阻止应用继续进入服务阶段。",
+    "evidence_sources": ["backend/app/main.py"],
+    "category": "application_lifecycle",
+    "difficulty": "medium"
+  },
+  {
+    "question": "异步数据库依赖如何保证请求异常时不会提交部分事务？",
+    "reference": "get_db 通过 async_session_factory 创建 session 并 yield 给请求。正常返回后 commit；发生异常时 rollback 并重新抛出；finally 中关闭 session。",
+    "evidence_sources": ["backend/app/database.py"],
+    "category": "database",
+    "difficulty": "medium"
+  },
+  {
+    "question": "上传接口对文件格式和编码做了哪些基础校验？",
+    "reference": "接口只允许 .py、.js、.md、.txt 扩展名，并将上传字节按 UTF-8 解码。扩展名不在白名单或 UTF-8 解码失败时返回 400，之后才调用 UserUploadIndex 建索引。",
+    "evidence_sources": ["backend/app/routers/upload_router.py"],
+    "category": "upload",
+    "difficulty": "easy"
+  },
+  {
+    "question": "配置对象为什么在启动时校验 LLM_API_KEY 和 JWT_SECRET？",
+    "reference": "Settings 初始化后，除非设置 SKIP_SECRET_VALIDATION，否则要求 LLM_API_KEY 非空且 JWT_SECRET 长度至少 32。这样避免服务在空 API key 或弱 JWT 密钥配置下启动；测试可通过环境变量显式跳过。",
+    "evidence_sources": ["backend/app/config.py"],
+    "category": "configuration",
+    "difficulty": "medium"
+  },
+  {
+    "question": "索引版本记录当前保存了哪些信息，缺少什么多知识库字段？",
+    "reference": "save_version_record 保存分块策略、chunk_size、chunk_overlap、文件数和 chunk 数，并由 create_index 在每次公开库构建后调用。IndexVersion 当前没有 knowledge_base 或 collection 字段，因此不能仅靠该表区分一次记录属于 TinyDB 还是项目源码。",
+    "evidence_sources": ["backend/app/rag/code_indexer.py", "backend/app/models/index_version.py"],
+    "category": "known_limitations",
+    "difficulty": "hard"
+  },
+  {
+    "question": "项目 RAGAS 脚本如何避免把 evidence_sources 等评测元数据交给 Judge 作为答案线索？",
+    "reference": "项目题集 JSON 可以保存 evidence_sources、分类和难度用于审核，但 build_samples 只构造 question、contexts、answer 和 ground_truth 四个字段传给 Dataset 和 RAGAS。因此 Judge 不会直接获得源码路径或题目分类。",
+    "evidence_sources": ["backend/scripts/eval_ragas.py"],
+    "category": "evaluation",
+    "difficulty": "hard"
+  }
+]

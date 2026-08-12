@@ -3,6 +3,8 @@
 > 适用方向：AI 大模型应用开发 / Agent 方向实习（非算法岗）
 > 范围：项目拷打 + RAG + Agent + LLM 基础 + Python + Redis + MySQL + LangChain/LangGraph
 
+> 使用原则：只把已实现且能现场解释、复现的能力说成“我做了”。评估数据、压测、PDF/OCR、反馈闭环等没有完成验证的内容，统一说成“当前限制 / 下一步”，不要包装成生产系统。
+
 ---
 
 ## 第一部分：项目拷打（模拟面试 Q&A）
@@ -11,19 +13,20 @@
 
 **Q: 介绍一下你这个项目。**
 
-A: 这是一个智能代码助手 Agent。用户可以用自然语言问关于代码库（TinyDB 开源项目）的问题，Agent 通过 ReAct 循环自主决定调用哪个工具（搜索代码、解释函数、生成测试），最终给出答案。整个过程有对话记录，支持多轮上下文。数据模型里预留了反馈表（点赞/点踩），作为后续优化方向的候选。
+A: 这是一个智能代码助手 Agent。用户可以用自然语言问关于代码库（TinyDB 开源项目）的问题，Agent 通过 OpenAI-compatible Function Calling 自主选择搜索代码、解释函数或生成测试，再基于工具结果给出答案。整个过程有对话记录，支持多轮上下文。数据模型里预留了反馈表（点赞/点踩），作为后续优化方向的候选。
 
 技术上它分成四层：
-- **RAG 层**：多策略分块器把源码切成代码块，做混合检索（Dense + Sparse）+ RRF 融合 + HyDE 查询改写 + cross-encoder 重排，配了完整的消融实验评估
-- **Agent 层**：自研了一个轻量 Harness，管理 ReAct 循环和工具注册，决策链路完整存入 MySQL，多轮对话历史持久化到数据库
+- **RAG 层**：多策略分块器把源码切成代码块，支持 Dense / BM25 检索、RRF 融合、HyDE 和可选重排。20 条检索测试集用于 Hit Rate、MRR、NDCG 回归；另提供可选 RAGAS 脚本，以 8 条带参考答案的题目补充评估上下文相关性和答案正确性。RAGAS 尚未跑出可复现数据，不对外宣称分数。
+- **知识库边界**：TinyDB 与当前项目源码分别使用独立的 Chroma collection 和 BM25 Redis key；API 与 Agent 在请求开始时固定一个知识库，会话历史也按知识库与 session 隔离，不混检两个代码库。
+- **Agent 层**：自研轻量 Function Calling Harness，管理工具 schema、循环控制和调用轨迹；工具参数经 Pydantic 校验后执行，多轮对话历史持久化到数据库
 - **API 层**：FastAPI 异步框架，JWT 鉴权 + Redis 黑名单登出，Redis 滑动窗口限流，文件上传索引
-- **部署层**：Docker Compose 一键启动（MySQL + Redis + 后端 + 前端），GitHub Actions 做 CI
+- **部署层**：提供 Docker Compose 编排（MySQL + Redis + 后端 + 前端），GitHub Actions 运行鉴权 API 集成测试和 RRF 单测。
 
 **面试官追问：你遇到最大的技术挑战是什么？**
 
 > 准备答案示例（任选一个真实经历）：
 >
-> **① LLM 输出格式不稳定导致 Agent 循环跑飞。** 一开始我用正则 `\{[^{}]*"name"...\}` 从 LLM 输出里提取 Action JSON，但 `args` 里也有花括号，正则匹配不上，Agent 就一直空转直到 max_steps。后来我改成一个花括号深度扫描的解析器（`_extract_json_action`），能正确处理嵌套 JSON。这让我意识到：**Agent 的可靠性瓶颈往往不在 LLM 智商，而在输出解析的鲁棒性**。
+> **① LLM 输出格式不稳定导致 Agent 循环跑飞。** 早期版本从 LLM 文本中提取 Action JSON，嵌套参数和格式漂移都会让解析失败。后来将协议改为 OpenAI-compatible Function Calling：模型返回 `tool_calls`，Harness 根据静态工具白名单找到工具，再用 Pydantic 校验 JSON 参数后执行。这让我意识到：**Agent 的可靠性瓶颈往往不在 LLM 智商，而在工具协议和服务端校验**。
 >
 > **② 评估全 0 分，排查发现是 Windows 路径分隔符。** 消融实验第一次跑出来 Hit Rate 全是 0，我一度以为是检索坏了。后来打印诊断才发现：Windows 上 `os.path.relpath` 返回 `tinydb\database.py`（反斜杠），而测试集里写的是 `tinydb/database.py`（正斜杠），字符串匹配永远失败。修法是在指标函数里统一 `replace("\\", "/")`。这个坑说明：**评估代码的细节（路径、编码）往往比算法本身更容易出错**。
 
@@ -33,33 +36,21 @@ A: 这是一个智能代码助手 Agent。用户可以用自然语言问关于�
 
 **Q: 为什么选 all-MiniLM-L6-v2 而不是 OpenAI 的 embedding？**
 
-A: 两个原因。第一，本地模型不需要网络调用和 API Key，开发迭代快，面试演示时也不依赖网络。第二，对于代码检索场景，384 维的向量已经够用，它速度快、体积小（约 80MB）。如果生产环境需要更高精度，config.py 里一行切换模型名。
+A: 两个原因。第一，本地模型不需要网络调用和 API Key，开发迭代快，面试演示时也不依赖网络。第二，它体积和推理成本较低，适合作为这个项目的本地基线。384 维并不天然代表“对代码检索足够好”，是否换更适合代码/中文的 embedding 必须由测试集验证；切换模型名后还必须全量重建向量索引，不能只改一行配置。
 
 **Q: 三种分块策略你怎么选的？给我讲讲对比结果。**
 
-A: 我做了对比实验：Recursive 策略优先在空行和 def/class 边界切分，保持了每块的语义完整性，适合代码；Semantic 策略按函数/类边界切，块更大但数量少；Token 策略按 token 数切，最均匀但可能切断函数逻辑。最终选 Recursive 作为默认。chunk_size 500、overlap 50，让边界信息至少在一个 chunk 里完整。设计成策略模式，config.py 一行切换。
+A: 当前实现提供 Recursive、Semantic 和 Token 三种策略。我先按代码结构选择 Recursive 作为默认：它优先利用空行和 def/class 边界，较少截断函数语义；Semantic 块更大，Token 块更均匀但更可能切开逻辑。当前参数是 chunk_size=500、overlap=50。**我还没有完成三种策略在同一测试集上的可复现实验，因此不会把这个选择说成已被数据证明的最优方案。**
 
 **Q: 混合检索是怎么做的？**
 
-A: 同时跑两条路——Dense 路用 all-MiniLM 把 query 转成 384 维向量在 Chroma 里做相似度搜索；Sparse 路用 rank_bm25 库做关键词匹配。两路各自返回 top-10 后，用 RRF（Reciprocal Rank Fusion）融合排序。公式是 1/(k + rank)，k 取 60。好处是不需要调权重、对分数尺度不敏感。
+A: Dense 路用 all-MiniLM 把 query 转成 384 维向量，在 Chroma 做相似度搜索；Sparse 路用 rank_bm25 做关键词匹配。当前实现是**顺序**调用两条路，再将各自 top-10 用 RRF（Reciprocal Rank Fusion）融合，公式是 1/(k + rank)，k=60。它没有做 Dense/Sparse 并发；外层只用 `asyncio.to_thread` 避免同步检索阻塞 FastAPI 事件循环。RRF 的好处是不需要调权重，也不受两路分数尺度不同影响。
 
 **Q: 消融实验的数据是什么？**
 
-A: 我构建了 20 条中文测试 query，每条标注了期望命中的源文件，用 Hit Rate / MRR / NDCG 三个指标评估。真实跑出来的结果（security 加固、索引重建后的最新一轮）：
+A: 我准备了 20 条中文 query，并为每条标注期望命中的源文件，用 Hit Rate、MRR、NDCG 评估检索。它适合先验证“目标文件是否被召回、排得是否靠前”，但样本很小，也不能证明最终回答正确。
 
-| 配置 | Hit Rate | MRR | NDCG | 延迟(ms) |
-|------|----------|-----|------|----------|
-| dense only | 0.95 | 0.60 | 0.60 | 13 |
-| sparse only | 0.95 | 0.60 | 0.60 | 0.3 |
-| hybrid (RRF) | 0.95 | 0.60 | 0.60 | 0.4 |
-| hybrid + HyDE | 0.95 | 0.60 | 0.60 | 3620 |
-| hybrid + HyDE + rerank | 0.85 | 0.49 | 0.48 | 3900 |
-
-（注：具体数字以你本地最后一次 run_eval 结果为准，面试前重跑一遍确认）
-
-结论有两个：
-1. **基础检索已经很强**：Hit Rate 达到 0.95，dense / sparse / hybrid 三项完全持平——说明在这个测试集上，双路召回的结果高度重合，RRF 融合和 HyDE 都没有带来增量（反而 HyDE 的延迟涨到 3.6 秒）。这是一个诚实的观察：混合检索的价值在代码场景主要体现在对特定查询（缩写、术语）的互补，在通用问题上不一定有提升。
-2. **reranker 在我们场景降了**：cross-encoder/ms-marco-MiniLM-L-6-v2 是在网页搜索（MS MARCO）上训练的，对代码检索不敏感，把正确结果排后面去了，Hit Rate 从 0.95 掉到 0.85。这是一个有价值的负面结论——说明 reranker 不是加了就一定好，要看领域匹配。
+`evaluation.py` 与线上检索一样通过 `SparseRetriever.from_redis()` 恢复由索引器从同一批 chunks 构建的 BM25 索引；索引缺失时会直接失败，避免把空 BM25 当成有效实验。最近一轮固定环境下，hybrid 的 Hit Rate 为 1.00、MRR/NDCG 为 0.59/0.58；dense-only 为 0.95、0.60/0.60。该结果仅对应这 20 条题目和当前 TinyDB 索引，报告时必须同时说明版本、配置和运行时间，不能外推成通用结论。
 
 **Q: RRF 和加权融合有什么区别？为什么选 RRF？**
 
@@ -67,7 +58,7 @@ A: RRF 不需要调权重，公式决定了两个路的结果会自动平衡。�
 
 **Q: cross-encoder 和 bi-encoder 有什么区别？**
 
-A: Bi-encoder 是 query 和 document 各自独立编码成向量，然后算相似度。速度快，可以离线建索引，适合召回阶段。Cross-encoder 是把 query 和 document 拼在一起送进模型做一次前向传播，精度更高但慢很多，适合精排阶段。我的流程是：bi-encoder 从 215 个块里召回 top-10，cross-encoder 对这 10 个重新打分取 top-3。
+A: Bi-encoder 是 query 和 document 各自独立编码成向量，再算相似度；它可以离线建索引，适合召回。Cross-encoder 则把 query 和 document 拼在一起前向计算，通常更精细但慢得多，适合对少量候选精排。项目可选地对融合结果重排；系统语料最近重建后是 39 个 chunk，不能再使用“215 个块”这个过期数字。是否启用 reranker 要以修复后的同一测试集结果和延迟成本决定，而不是默认开启。
 
 **Q: HyDE 查询改写是什么原理？**
 
@@ -79,37 +70,37 @@ A: HyDE（Hypothetical Document Embedding）的思路是：用户问题往往很
 
 **Q: 你的 Agent 循环是怎么实现的？**
 
-A: 标准 ReAct 模式：
+A: 当前是带原生工具调用协议的 ReAct 模式：
 ```
 while True:
-    ① 把系统提示词（含工具描述）+ 对话历史 + 用户问题 拼成 messages 送 LLM
-    ② LLM 输出 Thought（思考）和 Action（要调用的工具 + JSON 参数）
-    ③ 用花括号深度扫描解析 Action JSON，执行工具，返回 Observation
-    ④ Observation 追加到上下文
+    ① 把系统提示词、对话历史、用户问题和工具 JSON Schema 一起送给 LLM
+    ② LLM 通过 tool_calls 返回要调用的工具和 JSON 参数
+    ③ Harness 按工具白名单查找工具，用 Pydantic 校验参数后执行
+    ④ 将工具 Observation 作为 role=tool 消息追加到上下文
     ⑤ LLM 判断是否已经够信息给出最终答案
     ⑥ 如果够了，输出最终答案；否则回到①
 ```
-每一步的决策链（thought / action / observation）都存到 MySQL 的 agent_logs 表里。循环有 max_steps=6 兜底，防止死循环。
+每次工具调用的名称、已校验参数、执行状态和截断后的 Observation 会写入 `agent_logs`，并随当前响应返回给前端展示；不持久化模型原始 Thought/Chain of Thought。循环有 `max_steps=6` 兜底，同一轮相同工具与参数会被拒绝，防止无意义的重复调用。
 
 **Q: Harness 是做什么的？为什么不用 LangGraph？**
 
-A: Harness 是 Agent 的轻量运行框架——它负责三件事：工具注册（把 Tool 子类实例注册进 tool_map）、执行轨迹记录（agent_logs 落库）、多轮对话历史恢复。LangGraph 功能更强但封装太厚，面试时面试官一问"图状态怎么传递"就容易卡壳。我自己写的 Harness 每个方法都能讲清楚设计意图。而且架构上预留了扩展位，以后想换可以换。
+A: Harness 是 Agent 的轻量运行框架，负责工具注册（Tool 实例放进 tool_map）、执行轨迹记录（agent_logs）和多轮历史恢复。当前只有三个工具和线性的 ReAct 循环，手写实现的状态和失败路径更容易观察；若后续出现分支工作流、人机审批、断点恢复或多 Agent 协作，我会优先评估 LangGraph。选择不是“自己写一定更好”，而是按当前复杂度取舍。
 
 **Q: 三个工具是怎么注册到 Agent 的？**
 
-A: 我定义了一个抽象基类 `Tool`，声明了 name、description、parameters 属性和抽象的 execute 方法。每个具体工具（SearchCode / ExplainCode / GenerateTest）继承它并实现 execute。Harness 维护一个 `AVAILABLE_TOOLS` 列表和 `tool_map` 字典，把工具描述注入 LLM 的 system prompt，LLM 根据描述决定调哪个。新增工具只需要写一个继承 Tool 的类，加进列表，零侵入。
+A: 我定义了一个抽象基类 `Tool`，声明 name、description、args_model 和 execute。每个具体工具用 Pydantic 参数模型生成 JSON Schema；Harness 将 schema 放进 `tools` 请求字段，并维护 `tool_map` 白名单。模型只返回结构化 tool_calls，服务端再校验并执行。新增工具只需要定义参数模型、实现 execute 并加入列表。
 
 **Q: 多轮对话是怎么实现的？**
 
-A: 分两层。运行时：harness 内部维护 `conversation_history`，每轮把 user/assistant 消息追加进去，下一轮拼进 messages 一起送 LLM。持久化：agent_router 每次请求先调 `get_or_create_conversation` 拿会话，再从 MySQL 的 messages 表 `load_history` 恢复历史注入 harness，Agent 跑完后把本轮消息 `save_message` 存库。这样跨请求、跨服务重启都能恢复上下文。
+A: 分两层。运行时 Harness 维护 `conversation_history`，每轮把 user/assistant 消息追加进 messages。持久化时，router 按 `(current_user.id, session_id)` 获取会话，从 messages 表恢复该会话历史，Agent 跑完后保存本轮消息。因此它支持**同一用户、同一 session_id** 跨请求和服务重启恢复上下文；它不是跨不同 session 自动恢复的“长期记忆”。
 
 **Q: Agent 怎么评估的？**
 
-A: 我构建了 8 个覆盖 TinyDB 核心模块的测试任务（存储、查询、并发、中间件等），每个任务有"问题 + 参考答案要点"。跑完每个任务后，用 all-MiniLM 把 Agent 的回答和参考答案各转成向量，算余弦相似度作为得分，全部自动化、可复现。平均相似度 0.60，其中存储机制 0.71 最高、数据操作 0.47 最低——说明纯检索不足以支撑需要代码逻辑推理的问题。
+A: 当前仓库有 8 条覆盖 TinyDB 核心模块的题目和参考答案。`run_agent_eval.py` 会运行轻量 smoke check，记录是否得到回答、工具调用次数和被拒绝调用次数；另有可选 RAGAS 脚本，基于生产混合检索路径用 LLM Judge 计算上下文相关性和答案正确性。RAGAS 尚未实际跑数，因此我不会声称已有平均语义分数或模块级结论。后续仍要补充结果持久化、失败样本人工抽检和答案要点覆盖率。
 
 **Q: 你试过哪些 Agent 评估方案？为什么选语义相似度？**
 
-A: 试过三种。一开始用关键词匹配（检查回答是否包含预定关键词），发现太死板，同义词和语序变化全判错。然后试过 LLM 当裁判打分，但裁判没看过源码、没有标准答案，分数是瞎给的，而且有成本有随机性。最后用 embedding 余弦相似度——确定性强、零成本、可扩展到大测试集。三种方案的权衡本身就是面试可讲的内容。
+A: 我会组合使用三类信号，而不是把 embedding 相似度当作真值：关键词/断言适合检查硬性要点，语义相似度能容忍表达差异，带明确 rubric 和源码证据的 LLM 裁判适合抽样人工复核。当前已接入可选 RAGAS 脚本，指标是 `context_relevancy` 和 `answer_correctness`，并使用本地 embedding，避免评估时隐式调用另一家 embedding 服务；但它仍依赖付费 LLM Judge，且只有 8 条人工题，必须结合人工审阅，不能把单次分数当作真值。
 
 **Q: 用户反馈数据怎么用的？**
 
@@ -137,15 +128,15 @@ A: JWT 的天然缺陷是一旦签发，在过期之前无法撤回。我用 Red
 
 **Q: 你为什么不自己做登录 session 用 Cookie 而要选 JWT？**
 
-A: 两个原因。第一，JWT 是无状态的，服务端不需要存 session，方便水平扩展——部署多个副本时不需要共享 session 存储。第二，我这个项目既有后端 API 又有 Streamlit 前端，JWT 可以方便地在不同客户端之间传递（API 请求头 Bearer token），而 Cookie 受同源策略限制。
+A: 我选择 JWT 是因为 API 与 Streamlit 前端之间用 Bearer token 传递比较直接，也便于将鉴权校验放在多个后端副本中。需要说清的是：JWT 本身不保存登录 session，但本项目为了登出失效增加了 Redis 黑名单，所以并非“完全无服务端状态”。Cookie 也能做跨站配置，并不是天然不能用；这个项目选 JWT 是权衡，不是唯一正确方案。
 
 **Q: 你做了哪些并发方面的考虑？**
 
-A: 两点落地：第一，Redis 滑动窗口限流中间件，用 ZSET 实现真正的滑动窗口——每个请求时间戳作为一个 member，删除窗口外的旧记录后统计窗口内数量，对每个用户（从 JWT 解析）每分钟限 60 次请求，防止打满 DeepSeek API 的频率限制。Redis 挂了自动降级跳过限流，不影响可用性。第二，Agent 的同步检索调用用 `asyncio.to_thread` 扔到线程池，不阻塞 FastAPI 事件循环。
+A: 两点落地：第一，Redis 滑动窗口限流中间件。它把每次请求以“UUID member + 时间戳 score”写入 ZSET，删除窗口外记录后以 zcard 统计；有效 JWT 按用户限流，无效或匿名请求回退到 IP，每分钟 60 次。Redis 不可用时当前策略是放行并记录日志，这是可用性优先的降级，也意味着生产环境应配监控和 Redis 高可用。第二，Agent 的同步执行通过 `asyncio.to_thread` 放入线程池，避免阻塞 FastAPI 事件循环。
 
 **Q: LLM 调用层是怎么封装的？**
 
-A: `llm.py` 里封装了 `call_llm` 和 `call_llm_with_messages`。关键设计：① 通过 config 切换 DeepSeek / Ollama，请求头自动带 Bearer token；② 兼容两种响应格式（Ollama 的 `message.content` 和 OpenAI/DeepSeek 的 `choices[0].message.content`）；③ 重试 + 指数退避（失败后等 1s、2s 再试），最多 3 次；④ 重试全部失败返回空串，由调用方兜底。
+A: `llm.py` 封装了 `call_llm` 和 `call_llm_with_messages`：① 由配置切换 DeepSeek / Ollama，并按需带 Bearer token；② 兼容 Ollama 的 `message.content` 与 OpenAI/DeepSeek 的 `choices[0].message.content`；③ 默认最多 3 次尝试，退避 1 秒、2 秒；④ 全部失败返回空串。当前限制是同步 httpx 调用和“空串”这个弱错误契约，调用方不一定能区分模型空答与请求失败；后续应改为显式错误结果和异步客户端。
 
 ---
 
@@ -257,12 +248,12 @@ A: 本质上是一回事。OpenAI 叫 Function Calling，Claude 叫 Tool Use，�
 
 **Q: 什么是 Harness？**
 
-A: Agent Harness 是 Agent 的运行框架，负责管理 Agent 的整个生命周期——接收输入、维护状态、调用工具、记录轨迹、评估结果。它包括了 prompt 管理、工具注册、会话管理、日志记录和评测能力。好的 Harness 应该不依赖具体的 LLM 和具体的工具集，具有可插拔性。
+A: Harness 是 Agent 的运行框架，负责把 prompt、工具注册、循环控制、会话历史和执行轨迹组织起来。这个项目中的 Harness 已实现工具映射、Function Calling 循环、历史恢复和 `agent_logs` 摘要记录；**评测不是 Harness 当前职责**，也还没有完全做到与具体 LLM、工具集解耦。面试时我会讲它是为理解和可观测性写的轻量实现，不把它夸成通用 Agent 框架。
 
 **Q: 什么是 Agent 评测的难点？**
 
 A:
-1. **结果不确定性**：同一条 prompt 问两次可能得到不一样的答案（我用 temperature 0.3，实测同题重跑结果会变）
+1. **结果不确定性**：同一条 prompt 多次运行可能得到不一样的答案；当前调用 temperature=0.3，但还没有完成多次运行的统计验证
 2. **多步依赖**：中间某步失败，最终结果可能是"虽然中间错了但最后对了"或"虽然中间对了但最后错了"
 3. **难以自动化**：开放式回答没有标准答案，关键词匹配太死、LLM 裁判有偏差
 4. **Reward Hacking**：Agent 可能用"作弊"的方式达到评测目标（比如直接读评测集的答案）
@@ -277,7 +268,7 @@ A: Agent 不是边做边想，而是先规划出一系列步骤，然后再逐�
 
 **Q: Agent 的"记忆"有哪几种？你项目里用了哪些？**
 
-A: 通常分短期和长期。短期记忆就是 LLM 的上下文窗口——我项目里把对话历史拼进 messages 一起送 LLM。长期记忆需要外部存储——我项目里把对话存进 MySQL 的 messages 表，agent_logs 表存决策链路，可以跨会话恢复。Redis 可以加速活跃会话的最近 N 轮。向量库可以存"语义记忆"，按相关性召回历史。
+A: 通常分短期和长期。短期记忆是当前上下文窗口，本项目把同一会话的历史拼进 messages；长期记忆可放在外部存储，本项目将 messages 和 agent_logs 写入 MySQL。这里要精确：当前只能按同一 `(user_id, session_id)` 恢复，**不能跨不同 session 自动恢复**，也没有实现 Redis 活跃会话缓存或向量语义记忆；后二者只是可选设计。
 
 ---
 
@@ -300,7 +291,7 @@ A:
 
 A:
 1. **Role Prompting**：给 LLM 一个身份（"你是资深 Python 工程师"）
-2. **Few-shot**：给几个输入输出示例（我的 ReAct prompt 里就有一个完整的示例对话）
+2. **Few-shot**：给几个输入输出示例；当前 Function Calling 版本依赖工具 schema 约束，尚未加入示例对话
 3. **Chain-of-Thought**：让 LLM 逐步推理
 4. **Structured Output**：指定输出格式（JSON、XML）
 5. **Negative Prompt**：告诉 LLM 不要做什么
@@ -472,7 +463,7 @@ A: VARCHAR 最大 65535 字节，可以在行内存储，可以建索引。TEXT 
 
 **Q: 你项目里 MySQL 有哪些表？**
 
-A: 核心的有：users（用户）、conversations/messages（对话会话与消息，存多轮上下文）、agent_logs（Agent 决策链路：thought/action/observation）、retrieval_logs（混合检索的完整链路打点）、query_rewrites（HyDE 改写记录）、evaluation_runs（消融实验结果）、feedbacks（用户点赞点踩）、index_versions（索引版本）。这些审计表让评估和数据复盘有据可查。
+A: 核心表有：users、conversations/messages、agent_logs、retrieval_logs、query_rewrites、evaluation_runs、feedbacks、index_versions。它们为会话、检索和索引版本预留了记录位置；但要区分“有表”与“形成闭环”：feedbacks 尚无 API/UI，Agent 评测尚无端到端 runner，搜索接口也还没有返回真实 latency。不能仅因有表就声称已完成数据驱动优化。
 
 ---
 
@@ -524,7 +515,7 @@ A: `SET lock_key uuid NX EX 10`——如果 key 不存在则设置值（NX），
 **Q: 你在项目里用 Redis 做了什么？**
 
 A: 三件事：
-1. **检索结果缓存**：同一 query 短时间内多次请求，直接从 Redis 返回，跳过 embedding + Chroma，TTL 5 分钟
+1. **检索结果缓存**：同一 query、top-k 和 metadata filter 组合短时间内多次请求，直接从 Redis 返回，跳过 embedding + Chroma，TTL 5 分钟。把 filter 放进缓存 key 是多用户隔离的必要条件，否则同一 query 可能串数据。
 2. **API 限流**：用 Redis ZSET 做滑动窗口限流，每个用户（或 IP）每分钟最多 60 次。ZSET 里存每个请求的时间戳，删窗口外记录后 zcard 统计，比固定窗口（INCR+EXPIRE）更平滑，不会在窗口边界产生突刺
 3. **JWT 黑名单**：登出时把 token 存 Redis 标记为黑名单，TTL = 剩余有效期
 
@@ -567,7 +558,7 @@ with TestClient(app) as client:
 
 **Q: CI/CD 的核心流程是什么？**
 
-A: CI（持续集成）：代码 push 后自动跑测试、lint、构建镜像，确保新代码不破坏已有功能。CD（持续部署）：通过测试后自动部署到服务器。我项目里用 GitHub Actions 实现 CI——push 到 main 触发，起 MySQL 和 Redis services，装依赖后跑 pytest（密码哈希单测 + 鉴权 API 集成测试 + RRF 融合单测），覆盖注册/登录/刷新/登出/黑名单/401 全链路，通过才算绿。
+A: CI（持续集成）是在代码变更后自动执行校验；CD（持续部署）是在通过校验后自动部署。项目当前只实现了 CI，不含自动部署、lint 或镜像构建：push/PR 到 main 会启动 MySQL、Redis，运行密码哈希单测、鉴权 API 集成测试和 RRF 融合单测，覆盖注册、登录、刷新、登出、黑名单和 401。它还没有覆盖上传隔离、会话隔离、限流 429、完整 RAG 或 Docker 运行，因此绿灯不等于生产就绪。
 
 ---
 
@@ -580,28 +571,20 @@ A: 我会按链路逐层排查：
 2. **query 质量**：用户 query 太短？尝试 query 改写看有没有提升
 3. **embedding 质量**：在向量库中手动检索几个相关 query，看相似的代码是否在空间上靠近
 4. **检索策略**：Dense 单路的召回率多少？加上 BM25 后提升了多少？
-5. **重排序**：cross-encoder 是否把真正相关的结果排上来了？（我实测里它反而把正确结果排后面了）
-6. **最终检查**：看 retrieval_logs 里的完整链路，每一步的结果
+5. **重排序**：cross-encoder 是否把真正相关的结果排上来了？需要与不重排基线在同一测试集上比较指标和延迟，不能假定加了就会更好
+6. **最终检查**：看 hybrid 检索产生的 retrieval_logs，核对两路候选、融合结果和记录的耗时；当前不是所有检索路径都完整打点。
 
 **Q: LLM 输出格式不稳定怎么办？**
 
-A:
-1. **结构化输出**：用 Pydantic 做输出解析，配合 `response_format={"type": "json_object"}`
-2. **Few-shot 示例**：在 prompt 里给几个标准格式的例子（我的 ReAct prompt 里就有一个完整示例对话）
-3. **多次重试**：解析失败时，把错误信息告诉 LLM 让它重试
-4. **正则/解析器兜底**：我用花括号深度扫描解析嵌套 JSON，比简单正则鲁棒
+A: 当前使用 OpenAI-compatible Function Calling：模型通过 tool_calls 返回结构化调用，Harness 只允许静态注册的三个工具，并用 Pydantic 校验参数。无效 JSON、未知工具、不合法参数或同一轮相同参数的重复调用都不会执行，而是作为结构化错误 Observation 回传模型；循环仍有 `max_steps=6` 上限。供应商不支持原生工具调用时，才考虑受限的 JSON 输出降级方案。
 
 **Q: 你的 Agent 如果陷入了死循环怎么办？**
 
-A:
-1. **最大轮次限制**：Harness 里设 `max_steps=6`，到了强制结束
-2. **Token 预算**：累计 token 超限时停止并输出"无法在规定步骤内完成"
-3. **重复检测**：如果 Agent 连续 N 步做出相同的动作，判定为循环，中断
-4. **Fallback**：上述全部失败时，直接返回已有的检索结果作为最终答案
+A: 当前有两层硬保护：`max_steps=6` 的循环上限，以及同一轮按“工具名 + 规范化参数”计算的调用指纹，重复调用会被拒绝并把已有 Observation 回传模型。它们能阻止最常见的重复调用，但还没有 token/时间预算、跨轮语义级去重或回退答案策略，不能保证高质量终止。
 
 **Q: LLM 回答质量时好时坏怎么处理？**
 
-A: 这是我们实测到的——同一个问题用 temperature 0.3 跑两次，结果会有波动。处理方式：① 降低 temperature 到 0.1-0.2 让输出更稳定（但要小心太机械）；② 评估时跑 3 次取平均，不要只看单次结果；③ 关键路径（如工具调用格式）用 few-shot 示例强化约束；④ 对最终答案做质量检查（比如检测是否包含"我不知道"式的敷衍回答）。
+A: LLM 输出本身有随机性。当前调用固定 `temperature=0.3`，工具调用由 Function Calling schema 和服务端 Pydantic 校验约束，并未依赖 few-shot 固定工具格式；项目还没有完成“同题多次运行取均值”或自动答案质量检查。要降低波动，我会先固定模型版本、prompt 和检索索引，再对固定测试集多次运行并报告均值和方差；对工具调用优先收紧结构化约束，而不是只靠降低 temperature。
 
 **Q: 你的 API Key 和 JWT 密钥是怎么管理的？**
 
@@ -619,13 +602,41 @@ A: 踩过坑。早期集成测试对默认 `code_assistant` 库执行过 `drop_a
 
 A: 两类语料用途完全不同。系统 TinyDB 语料是 Agent 回答问题的知识源，所有用户共享；用户上传是个人私有内容。如果不分开，A 用户上传的代码会被 B 用户搜到（越权），而且用户上传内容质量参差，会污染系统检索结果。我用 `source_type` 元数据区分，检索时按需过滤——搜系统走 `/api/search`（只查 system），搜自己的上传走 `/api/upload/search`（强制 owner_id）。这是数据边界意识，AI 应用很容易在这里出事故。
 
+**Q: metadata 过滤已经做了，缓存会不会把 A 的结果给 B？**
+
+A: 会，这是多租户检索容易漏掉的一层。当前 DenseRetriever 的 Redis key 包含 query、top-k 和按 key 排序后的 `where` filter；用户上传的 filter 含 `source_type=user_upload` 和 `owner_id`，所以不同用户不会命中同一缓存项。若缓存 key 只用 query，即使 Chroma 检索端过滤正确，缓存层仍会造成跨用户泄露。缓存隔离必须和数据库/向量库隔离一起设计。
+
+**Q: 系统索引重建时，用户上传的数据会怎样？**
+
+A: 系统语料、项目源码与用户上传已经使用独立的 Chroma collection：`system_code`、`project_code` 和 `user_uploads`。重建其中一个公开知识库只会删除它自己的 collection；上传检索还要求 `source_type=user_upload` 与当前 `owner_id` 的 metadata filter，因此重建公开索引不会删除用户向量，也不会跨用户召回。公开知识库由 `knowledge_base_id` 显式区分，并让 collection、BM25 key 和 API 查询范围都绑定该 ID；不能只靠给文档加一个 metadata。
+
+**Q: 为什么把项目自身源码也做成一个知识库？如何避免污染 TinyDB 检索？**
+
+A: 它让演示可以回答“Function Calling 如何落地”“BM25 如何和 Chroma 融合”等项目自身的实现问题，比只解释第三方 TinyDB 更贴近岗位。但我没有把两个仓库塞进同一 collection：`tinydb` 使用 `system_code`，`project` 使用 `project_code`，BM25 Redis key 也包含 collection 名。前端/API 先选择知识库，Agent 初始化时把工具绑定到该库；同一用户切库时，持久化 session 会加上知识库前缀。因此模型不能靠一次工具调用跨库检索，历史也不会串库。
+
+**Q: 检索评估为什么不能只报一个很高的 Hit Rate？**
+
+A: 首先，20 条 query 只适合快速回归，样本过小且都以“命中预期源文件”为标注，不能代表真实用户问题，也不评估 chunk 充分性和最终答案事实性。其次，评估实现必须与生产一致；当前检索评估已恢复索引器构建并缓存的 BM25 索引，索引缺失时会失败。正确做法仍是扩大并分层测试集，保留失败案例，并同时报告检索指标、引用正确性、工具调用成功率和人工抽检结果。
+
+**Q: RAG / Agent 如何防提示注入和越权工具调用？**
+
+A: 当前 Agent 的工具是静态注册的三个代码工具，主检索只读系统语料；生成的测试代码也不会由服务端执行。Function Calling 后，工具参数在服务端按 Pydantic schema 校验，未知工具不会执行。但这不等于完整解决提示注入：若未来增加写入或外部调用工具，还必须做按用户授权、显式确认和恶意输入回归测试。
+
+**Q: 你的检索延迟指标可信吗？**
+
+A: `hybrid_search` 会测量并写入 retrieval_logs，但 `/api/search` 当前固定返回 `latency_ms=0.0`，所以不能拿 API 响应字段去报告性能，也没有做并发压测或 P95/P99。面试时我会只说“内部 hybrid 路径有单次耗时记录”，并把端到端延迟、缓存命中率和分位数压测列为下一步，而不是伪装成已有 SLA。
+
+**Q: Redis ZSET 限流已经是滑动窗口，为什么还需要 Lua？**
+
+A: ZSET 能表达滑动窗口，但当前实现把删除旧记录、写入当前请求、计数和设置过期放在 pipeline 中；pipeline 减少网络往返，不等于整个“检查再写入”过程对并发请求原子。在临界并发下，多个请求可能都看到未超限再一起通过。下一步应把这四步放进 Lua 脚本，并明确“第 N 次是否拒绝”的顺序；还要为 429、匿名 IP 与已登录用户三种路径补集成测试。当前实现适合演示算法和基本保护，不能宣称严格配额。
+
 ---
 
 ## 第十一部分：文件上传 & 多模态处理
 
 **Q: 用户上传文件你怎么处理？**
 
-A: 当前实现了代码/文本类文件（.py / .js / .md / .txt）的上传：校验扩展名 → 读取 UTF-8 内容 → 复用已有的 chunker 分块 → embedding 存进向量库，并给 chunk 打上 `source_type="user_upload"` 和 `owner_id=当前用户` 两个元数据标记。**上传后走的是和主仓库完全相同的 RAG 管道**——不单独写解析逻辑，只是多了一步"文件读入"。这样加新格式只需加一个读取 parser，核心 RAG 代码零改动，体现了系统可扩展性。同时 owner_id 标记让每个用户的上传内容在检索端隔离，互不可见。
+A: 当前实现了代码/文本类文件（.py / .js / .md / .txt）的上传：校验扩展名 → 读取 UTF-8 内容 → 复用已有 chunker 分块 → embedding 存进向量库，并给 chunk 打上 `source_type="user_upload"` 和 `owner_id=当前用户`。它复用了系统语料的**分块和 Dense 检索**路径，但没有把上传内容加入 BM25 或 Agent 主检索；上传内容要通过 `/api/upload/search` 单独查询。owner_id filter 让用户间内容在检索端隔离。至于新格式，目前仍需同时补 parser、扩展名白名单和测试，不能说“零改动”。
 
 **Q: 上传的文件和主仓库的索引是怎么隔离和合并的？**
 
@@ -633,18 +644,18 @@ A: 三层隔离：
 1. **系统 vs 用户**：系统 TinyDB 语料打 `source_type="system"` 标，用户上传打 `source_type="user_upload"` 标。search 接口和 Agent 工具默认只搜系统语料（`where={"source_type":"system"}`），用户上传不进主检索链路。
 2. **用户 vs 用户**：上传 chunk 额外写入 `owner_id=current_user.id`。检索用户上传内容时用 Chroma metadata filter `{"source_type":"user_upload","owner_id":N}`，在检索端就过滤掉其他用户的内容，而不是返回后再过滤。这是防止越权的关键。
 3. **接口隔离**：搜系统代码走 `/api/search`，搜自己的上传走 `/api/upload/search`（服务端强制 owner_id），两条链路互不交叉。
-底层共用一个向量库，靠 metadata 区分。设计上预留了独立 collection 的方案——如果量大了再拆。
+底层使用同一 Chroma 持久化目录，但采用独立 collection：`system_code` 存系统语料，`user_uploads` 存用户上传。系统索引重建仅删除 `system_code`，不会影响上传内容；metadata filter 仍是查询时的第二道隔离。
 
 **Q: 为什么要做文件上传这个功能？**
 
 A:
-1. **展示系统可扩展性**：新文件格式只需加 parser，不碰核心 RAG 代码
-2. **最直观的演示效果**：面试时现场上传一段代码 → 问问题 → Agent 实时检索回答，比干讲有说服力多
-3. **也是 Agent 多模态处理意识的体现**（虽然当前聚焦文本，架构上留了 PDF/OCR 的扩展位）
+1. **展示数据边界**：上传内容不是混进公共语料，而是以 owner_id 和独立接口隔离
+2. **最直观的演示效果**：面试时现场上传一段代码 → 调用 `/api/upload/search` 查询其中内容，能展示从上传、分块到受限检索的闭环
+3. **明确能力边界**：它是文本/代码上传，不是多模态 Agent，也尚未接入 Agent 主对话链路
 
 **Q: 如果以后要支持 PDF 和图片，你会怎么设计？**
 
-A: 设计一个 `FileParser` 分发器，根据扩展名把文件交给不同 parser：代码/文本直接读内容、PDF 用 PyMuPDF 提取文字层、图片用 Tesseract OCR。提取出文本后，后续管道完全复用（chunker → embedding → 向量库）。加新格式只加一个 parser 函数，这是标准的策略模式。
+A: 这是未来设计，不是当前实现。我会先定义清晰的 parser 接口：代码/文本直接读取，PDF 先用 PyMuPDF 提取文字层，扫描版再考虑 OCR。解析结果应保留页码/文件名等引用元数据，并设置文件大小、页数、解析超时和恶意文件防护。之后再进入现有 chunker 和索引流程；每加一种格式还要补白名单、失败处理和隔离测试，不能只加一个 parser 函数就宣称完成。
 
 ---
 

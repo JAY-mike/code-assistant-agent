@@ -7,15 +7,30 @@
 """
 
 import pytest
+import redis
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.database import engine, Base
 from app.routers.auth_router import router
+from app.services.conversation_service import load_history, save_message
 
 # 独立 app，只挂 auth_router，不加载 chromadb 相关模块
 app = FastAPI()
 app.include_router(router, prefix="/api")
+
+
+def _redis_available() -> bool:
+    try:
+        client = redis.Redis(
+            host="127.0.0.1",
+            port=6379,
+            socket_connect_timeout=0.2,
+            socket_timeout=0.2,
+        )
+        return bool(client.ping())
+    except redis.RedisError:
+        return False
 
 
 async def _create_tables():
@@ -86,6 +101,7 @@ class TestProtected:
         assert resp.status_code == 401
 
 
+@pytest.mark.skipif(not _redis_available(), reason="requires a running Redis instance")
 class TestLogoutBlacklist:
     def test_logout_revokes_token(self, client):
         # 注册登录拿 token
@@ -129,3 +145,15 @@ class TestRefresh:
         # 用 access token 当 refresh token 用，应该被拒绝
         resp = client.post("/api/auth/refresh", params={"refresh_token": access_token})
         assert resp.status_code == 401
+
+
+class TestConversationIsolation:
+    def test_same_session_id_is_scoped_to_user(self, client):
+        client.portal.call(save_message, 1, "shared-session", "user", "alice secret")
+        client.portal.call(save_message, 2, "shared-session", "user", "bob secret")
+
+        alice_history = client.portal.call(load_history, 1, "shared-session")
+        bob_history = client.portal.call(load_history, 2, "shared-session")
+
+        assert [message["content"] for message in alice_history] == ["alice secret"]
+        assert [message["content"] for message in bob_history] == ["bob secret"]

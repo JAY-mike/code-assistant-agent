@@ -7,6 +7,7 @@ from fastapi import Request
 from starlette.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from app.config import settings
+from app.clients import get_redis_client
 from app.logger import log
 
 
@@ -18,23 +19,23 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
     相比固定窗口（time()//window），滑动窗口不会在窗口边界产生突刺。
     """
 
-    def __init__(self, app, rate_limit: int = 60, window_seconds: int = 60):
+    def __init__(
+        self,
+        app,
+        rate_limit: int = 60,
+        window_seconds: int = 60,
+        redis_client=None,
+    ):
         super().__init__(app)
         self.rate_limit = rate_limit
         self.window_seconds = window_seconds
-        self.redis = None
-        try:
-            import redis as redis_lib
-            self.redis = redis_lib.Redis(
-                host=settings.REDIS_HOST,
-                port=settings.REDIS_PORT,
-                db=0,
-                decode_responses=True,
-                protocol=2,
-            )
-            self.redis.ping()
-        except Exception as e:
-            log.warning("Redis unavailable, rate limiting disabled: %s", e)
+        self.redis = redis_client
+        if self.redis is not None:
+            return
+
+        self.redis = get_redis_client()
+        if self.redis is None:
+            log.warning("Redis unavailable, rate limiting disabled")
 
     def _client_key(self, request: Request) -> str:
         """识别客户端：优先从 JWT 解析用户，否则退回 IP。

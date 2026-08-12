@@ -1,5 +1,8 @@
 """测试集：代码检索问题与期望结果"""
 
+TEST_SET_VERSION = "tinydb-retrieval-v1"
+
+
 TEST_SET = [
     {
         "query": "TinyDB 如何初始化和管理默认表？",

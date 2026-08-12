@@ -65,4 +65,4 @@ jobs:
       - name: Run unit tests
         run: |
           cd backend
-          python -m pytest tests/test_auth.py tests/test_auth_api.py tests/test_fusion.py -v
+          python -m pytest tests/test_auth.py tests/test_auth_api.py tests/test_agent_trace_api.py tests/test_eval_ragas.py tests/test_function_calling.py tests/test_fusion.py tests/test_knowledge_bases.py tests/test_rate_limit.py tests/test_user_upload.py -v

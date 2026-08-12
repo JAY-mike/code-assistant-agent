@@ -7,6 +7,9 @@ data/chroma/
 data/target_repo/
 env/
 .venv/
+eval-env/
+output/
+tmp/
 *.db
 .DS_Store
 1.png

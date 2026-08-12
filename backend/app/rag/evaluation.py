@@ -1,17 +1,13 @@
 """评估引擎：测试集评估 + 指标计算 + 消融实验"""
 
 import time
-import asyncio
-import logging
-
-from app.rag.test_set import TEST_SET
-from app.rag.dense_retriever import DenseRetriever
+from app.rag.test_set import TEST_SET, TEST_SET_VERSION
+from app.rag.dense_retriever import DenseRetriever, SYSTEM_CORPUS
 from app.rag.sparse_retriever import SparseRetriever
-from app.rag.fusion import hybrid_search, rrf
+from app.rag.fusion import rrf
 from app.rag.reranker import Reranker
 from app.rag.query_rewriter import rewrite
 from app.logger import log
-from functools import partial
 
 
 def _normalize(source: str) -> str:
@@ -72,8 +68,12 @@ async def evaluate_config(
     运行一轮评估，返回聚合指标
     参数控制消融实验：关掉某个组件就看指标怎么掉
     """
-    dense_retriever = DenseRetriever()
-    sparse_retriever = SparseRetriever()
+    dense_retriever = DenseRetriever() if dense else None
+    sparse_retriever = SparseRetriever.from_redis() if sparse else None
+    if sparse_retriever and sparse_retriever.count() == 0:
+        raise RuntimeError(
+            "BM25 index is unavailable. Rebuild the system index before running evaluation."
+        )
     reranker_instance = Reranker() if reranker else None
 
     total_hit_rate = 0.0
@@ -96,7 +96,9 @@ async def evaluate_config(
         sparse_results = []
 
         if dense_retriever:
-            dense_results = dense_retriever.search(query, top_k * 2)
+            dense_results = dense_retriever.search(
+                query, top_k * 2, where=SYSTEM_CORPUS
+            )
 
         if sparse_retriever:
             sparse_results = sparse_retriever.search(query, top_k * 2)
@@ -144,6 +146,7 @@ async def evaluate_config(
         "avg_latency_ms": round(total_latency / n * 1000, 2),
         "test_set_size": n,
         "config": {
+            "dataset_version": TEST_SET_VERSION,
             "dense": dense,
             "sparse": sparse,
             "hyde": hyde,

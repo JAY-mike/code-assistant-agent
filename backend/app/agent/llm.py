@@ -1,115 +1,209 @@
-"""LLM 调用封装：支持 Ollama（本地开发）/ DeepSeek API（生产）"""
+"""LLM client for text completions and OpenAI-compatible tool calls."""
 
+import json
 import time
+from collections.abc import Callable
+from threading import Event
+
 import httpx
+
 from app.config import settings
 from app.logger import log
 
 
+def _headers() -> dict:
+    headers = {"Content-Type": "application/json"}
+    if settings.LLM_API_KEY:
+        headers["Authorization"] = f"Bearer {settings.LLM_API_KEY}"
+    return headers
+
+
 def _parse_response(response: dict) -> str:
-    """兼容 Ollama 和 OpenAI 格式的响应解析"""
-    # Ollama 格式: {"message": {"content": "..."}}
+    """Parse Ollama and OpenAI-compatible text responses."""
     if "message" in response:
         return response["message"].get("content", "")
-    # OpenAI / DeepSeek 格式: {"choices": [{"message": {"content": "..."}}]}
-    if "choices" in response and len(response["choices"]) > 0:
-        return response["choices"][0].get("message", {}).get("content", "")
+    if response.get("choices"):
+        return response["choices"][0].get("message", {}).get("content", "") or ""
     log.error("Unknown response format: %s", str(response)[:200])
     return ""
 
 
-def call_llm(prompt: str, system_prompt: str = "", max_retries: int = 2) -> str:
-    """
-    调用 LLM，返回文本回复
+def _parse_assistant_message(response: dict) -> dict | None:
+    """Extract an assistant message and preserve the provider's tool calls."""
+    choices = response.get("choices", [])
+    if not choices:
+        log.error("Tool-calling response has no choices: %s", str(response)[:200])
+        return None
 
-    通过配置 LLM_API_ENDPOINT 切换服务商:
-        Ollama  : http://localhost:11434/api/chat
-        DeepSeek: https://api.deepseek.com/v1/chat/completions
-    """
-    messages = []
-    if system_prompt:
-        messages.append({"role": "system", "content": system_prompt})
-    messages.append({"role": "user", "content": prompt})
+    message = choices[0].get("message")
+    if not isinstance(message, dict):
+        log.error("Tool-calling response has no assistant message: %s", str(response)[:200])
+        return None
 
-    headers = {
-        "Content-Type": "application/json",
+    return {
+        "role": "assistant",
+        "content": message.get("content"),
+        "tool_calls": message.get("tool_calls") or [],
     }
-    if settings.LLM_API_KEY:
-        headers["Authorization"] = f"Bearer {settings.LLM_API_KEY}"
 
+
+def _post_with_retries(
+    body: dict,
+    max_retries: int,
+    timeout_seconds: float = 60,
+    cancel_event: Event | None = None,
+) -> dict | None:
     for attempt in range(max_retries + 1):
+        if cancel_event and cancel_event.is_set():
+            log.info("LLM call cancelled before attempt")
+            return None
         try:
             response = httpx.post(
                 settings.LLM_API_ENDPOINT,
-                json={
-                    "model": settings.LLM_MODEL,
-                    "messages": messages,
-                    "stream": False,
-                    "temperature": 0.3,
-                    "max_tokens": 512,
-                },
-                timeout=60,
+                json=body,
+                headers=_headers(),
+                timeout=timeout_seconds,
             )
             response.raise_for_status()
-            result = _parse_response(response.json())
-            if result:
-                return result
-
+            return response.json()
         except httpx.TimeoutException:
             log.warning("LLM timeout (attempt %d/%d)", attempt + 1, max_retries + 1)
-        except httpx.HTTPStatusError as e:
-            log.warning("LLM HTTP %s (attempt %d/%d)", e.response.status_code, attempt + 1, max_retries + 1)
-        except Exception as e:
-            log.warning("LLM error: %s (attempt %d/%d)", e, attempt + 1, max_retries + 1)
-
-        if attempt < max_retries:
-            time.sleep(2 ** attempt)  # 指数退避：1s → 2s
-
-    log.error("LLM call failed after %d retries", max_retries)
-    return ""
-
-def call_llm_with_messages(messages: list[dict], max_retries: int = 2) -> str:
-    """
-    调用 LLM，传入完整消息列表（包含 system / user / assistant）
-
-    用于多轮对话场景，保留全部上下文。
-    """
-    headers = {
-        "Content-Type": "application/json",
-    }
-    if settings.LLM_API_KEY:
-        headers["Authorization"] = f"Bearer {settings.LLM_API_KEY}"
-
-    body = {
-        "model": settings.LLM_MODEL,
-        "messages": messages,
-        "stream": False,
-        "temperature": 0.3,
-        "max_tokens": 1024,
-    }
-
-    for attempt in range(max_retries + 1):
-        try:
-            response = httpx.post(
-                settings.LLM_API_ENDPOINT,
-                json = body,
-                headers=headers,
-                timeout = 60,
+        except httpx.HTTPStatusError as exc:
+            log.warning(
+                "LLM HTTP %s (attempt %d/%d)",
+                exc.response.status_code,
+                attempt + 1,
+                max_retries + 1,
             )
-            response.raise_for_status()
-            result = _parse_response(response.json())
-            if result:
-                return result
-                
-        except httpx.TimeoutException:
-            log.warning("LLM timeout (attempt %d/%d)", attempt + 1, max_retries + 1)
-        except httpx.HTTPStatusError as e:
-            log.warning("LLM HTTP %s (attempt %d/%d)", e.response.status_code, attempt + 1, max_retries + 1)
-        except Exception as e:
-            log.warning("LLM error: %s (attempt %d/%d)", e, attempt + 1, max_retries + 1)
+        except Exception as exc:
+            log.warning("LLM error: %s (attempt %d/%d)", exc, attempt + 1, max_retries + 1)
 
         if attempt < max_retries:
             time.sleep(2 ** attempt)
 
     log.error("LLM call failed after %d retries", max_retries)
-    return ""
+    return None
+
+
+def call_llm(
+    prompt: str,
+    system_prompt: str = "",
+    max_retries: int = 2,
+    timeout_seconds: float = 60,
+    cancel_event: Event | None = None,
+) -> str:
+    messages = []
+    if system_prompt:
+        messages.append({"role": "system", "content": system_prompt})
+    messages.append({"role": "user", "content": prompt})
+
+    response = _post_with_retries(
+        {
+            "model": settings.LLM_MODEL,
+            "messages": messages,
+            "stream": False,
+            "temperature": 0.3,
+            "max_tokens": 512,
+        },
+        max_retries,
+        timeout_seconds,
+        cancel_event,
+    )
+    return _parse_response(response) if response is not None else ""
+
+
+def call_llm_with_messages(
+    messages: list[dict],
+    max_retries: int = 2,
+    timeout_seconds: float = 60,
+    cancel_event: Event | None = None,
+) -> str:
+    response = _post_with_retries(
+        {
+            "model": settings.LLM_MODEL,
+            "messages": messages,
+            "stream": False,
+            "temperature": 0.3,
+            "max_tokens": 1024,
+        },
+        max_retries,
+        timeout_seconds,
+        cancel_event,
+    )
+    return _parse_response(response) if response is not None else ""
+
+
+def call_llm_with_messages_stream(
+    messages: list[dict],
+    on_delta: Callable[[str], None],
+    timeout_seconds: float = 60,
+    cancel_event: Event | None = None,
+) -> str:
+    """Stream an OpenAI-compatible completion and return the assembled text."""
+    body = {
+        "model": settings.LLM_MODEL,
+        "messages": messages,
+        "stream": True,
+        "temperature": 0.3,
+        "max_tokens": 1024,
+    }
+    chunks = []
+    try:
+        with httpx.stream(
+            "POST",
+            settings.LLM_API_ENDPOINT,
+            json=body,
+            headers=_headers(),
+            timeout=timeout_seconds,
+        ) as response:
+            response.raise_for_status()
+            for line in response.iter_lines():
+                if cancel_event and cancel_event.is_set():
+                    log.info("Streaming LLM response cancelled")
+                    break
+                if not line or not line.startswith("data:"):
+                    continue
+                data = line.removeprefix("data:").strip()
+                if data == "[DONE]":
+                    break
+                try:
+                    payload = json.loads(data)
+                    delta = payload["choices"][0].get("delta", {}).get("content") or ""
+                except (IndexError, KeyError, TypeError, json.JSONDecodeError):
+                    continue
+                if delta:
+                    chunks.append(delta)
+                    on_delta(delta)
+    except httpx.TimeoutException:
+        log.warning("Streaming LLM response timed out")
+    except httpx.HTTPStatusError as exc:
+        log.warning("Streaming LLM HTTP %s", exc.response.status_code)
+    except Exception as exc:
+        log.warning("Streaming LLM error: %s", exc)
+
+    return "".join(chunks)
+
+
+def call_llm_with_tools(
+    messages: list[dict],
+    tools: list[dict],
+    max_retries: int = 2,
+    timeout_seconds: float = 60,
+    cancel_event: Event | None = None,
+) -> dict | None:
+    """Call an OpenAI-compatible endpoint and return a structured message."""
+    response = _post_with_retries(
+        {
+            "model": settings.LLM_MODEL,
+            "messages": messages,
+            "tools": tools,
+            "tool_choice": "auto",
+            "stream": False,
+            "temperature": 0.3,
+            "max_tokens": 1024,
+        },
+        max_retries,
+        timeout_seconds,
+        cancel_event,
+    )
+    return _parse_assistant_message(response) if response is not None else None

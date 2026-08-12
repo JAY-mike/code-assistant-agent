@@ -40,6 +40,10 @@ services:
       REDIS_PORT: 6379
       LLM_API_KEY: ${LLM_API_KEY}
       JWT_SECRET: ${JWT_SECRET}
+      REPO_PATH: /workspace/project/data/target_repo
+      PROJECT_SOURCE_PATH: /workspace/project
+    volumes:
+      - ./:/workspace/project:ro
     depends_on:
       mysql:
         condition: service_healthy

@@ -1,7 +1,7 @@
 """用户文件上传索引：按 owner_id 隔离 + 检索"""
 
 from app.rag.chunker import CodeChunker
-from app.rag.dense_retriever import DenseRetriever, USER_CORPUS
+from app.rag.dense_retriever import DenseRetriever, USER_CORPUS, USER_UPLOAD_COLLECTION
 from app.logger import log
 
 
@@ -9,8 +9,8 @@ class UserUploadIndex:
     """管理用户上传文件的索引（按 owner_id 隔离）"""
 
     def __init__(self):
-        # 复用 DenseRetriever（Chroma 持久化）
-        self.retriever = DenseRetriever()
+        # 上传内容与系统语料使用独立 collection，避免系统重建索引时删除用户数据。
+        self.retriever = DenseRetriever(collection_name=USER_UPLOAD_COLLECTION)
 
     def add_file(self, filename: str, content: str, owner_id: int) -> int:
         """索引一个上传的文件，返回生成的 chunk 数
@@ -45,4 +45,3 @@ class UserUploadIndex:
         return [r for r in results
                 if str(r.get("source", "")).startswith("upload/")
                 and r.get("owner_id") == owner_id]
-

@@ -1,12 +1,17 @@
 import os
 from pathlib import Path
 
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 class Settings(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_file=PROJECT_ROOT / ".env",
+        env_file_encoding="utf-8",
+    )
+
     # App
     APP_NAME: str = "Code Assistant Agent"
     DEBUG: bool = True
@@ -28,6 +33,8 @@ class Settings(BaseSettings):
 
     # 目标代码仓库路径
     REPO_PATH: str = "./data/target_repo"
+    # 当前项目源码路径；Docker 环境通过 Compose 挂载为只读目录
+    PROJECT_SOURCE_PATH: str = "."
 
     # Embedding 模型
     # EMBEDDING_MODEL: str = "BAAI/bge-small-zh-v1.5"
@@ -44,13 +51,16 @@ class Settings(BaseSettings):
     LLM_API_ENDPOINT: str = "https://api.deepseek.com/v1/chat/completions"
     LLM_MODEL: str = "deepseek-v4-flash"
     LLM_API_KEY: str = ""
-    # LLM_MODEL: str = "gemma:7b"    
+    # Agent 受控执行预算：每次用户请求在有限时间内返回。
+    AGENT_MAX_STEPS: int = 4
+    AGENT_MAX_DURATION_SECONDS: float = 75.0
+    AGENT_LLM_TIMEOUT_SECONDS: float = 15.0
+    AGENT_LLM_MAX_RETRIES: int = 0
+    AGENT_TOOL_LLM_TIMEOUT_SECONDS: float = 12.0
+    AGENT_REQUEST_TIMEOUT_SECONDS: float = 80.0
+    # LLM_MODEL: str = "gemma:7b"
     # JWT
     JWT_SECRET: str = ""  # 从 .env 读取，禁止硬编码
-
-    class Config:
-        env_file = PROJECT_ROOT / ".env"
-        env_file_encoding = "utf-8"
 
     def _validate_secrets(self):
         """启动时校验密钥，缺失则拒绝启动，避免用空密钥签发 JWT"""

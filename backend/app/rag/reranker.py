@@ -5,6 +5,7 @@ import json
 
 from sentence_transformers import CrossEncoder
 
+from app.clients import get_redis_client
 from app.config import settings
 from app.logger import log
 
@@ -22,19 +23,7 @@ class Reranker:
             log.error("Failed to load reranker: %s", e)
             self.model = None
 
-        self.redis_client = None
-        try:
-            import redis as redis_lib
-            self.redis_client = redis_lib.Redis(
-                host=settings.REDIS_HOST,
-                port=settings.REDIS_PORT,
-                db=0,
-                decode_responses=True,
-                protocol=2,
-            )
-            self.redis_client.ping()
-        except Exception:
-            self.redis_client = None
+        self.redis_client = get_redis_client()
 
     def rerank(self, query: str, candidates: list[dict], top_n: int = 3) -> list[dict]:
         if not self.model or not candidates:
