@@ -161,13 +161,13 @@ python -c "import asyncio; from app.rag.evaluation import run_ablation; asyncio.
 
 `backend/scripts/eval_ragas.py` 可通过 `--knowledge-base tinydb/project` 评估指定公开知识库。它复用对应 collection 的 Dense + BM25 + RRF 获取 contexts，让业务 LLM 基于 contexts 生成 answer，再使用独立配置的 LLM Judge 计算：
 
-- `context_relevancy`：检索上下文对问题的相关性。
+- `context_precision`：检索上下文对问题的相关性。
 - `answer_correctness`：答案与参考答案的一致性。
 
 ```powershell
 cd backend
 python -m pip install -r requirements-eval.txt
-python scripts/eval_ragas.py --knowledge-base project
+python -m scripts.eval_ragas.py --knowledge-base project
 ```
 
 TinyDB 使用 `backend/app/agent/eval_tasks.py` 中的 8 条人工题。项目源码使用 `backend/data/eval/project_eval_set.json` 与 `project_eval_set_extra.json` 中合计 34 条人工审核题，每条包含 `question`、`reference`、`evidence_sources`、分类和难度；两个 JSON 都位于项目索引排除目录，避免参考答案泄漏到 `project_code`。

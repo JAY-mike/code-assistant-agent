@@ -1,7 +1,7 @@
 # Code Assistant Agent 项目全源码精讲
 
-> 一个基于 RAG 的代码问答与 Agent 系统，以 TinyDB 开源项目为知识库。
-> 本教程按「由地基到屋顶」的顺序，对项目中每一个代码文件进行详细讲解。
+> 一个基于 RAG 的代码问答与 Agent 系统，以 TinyDB 开源项目 + 项目自身源码为双知识库。
+> 本教程按「由地基到屋顶」的顺序，对项目中的核心实现、部署配置与主要测试文件进行详细讲解。
 
 ---
 
@@ -9,7 +9,7 @@
 
 ### 本教程是什么
 
-这份文档把 `code-assistant-agent` 项目（FastAPI + RAG + ReAct Agent + Streamlit + Docker）的**每一个代码文件**都讲一遍。每一章的结构统一为：
+这份文档把 `code-assistant-agent` 项目（FastAPI + RAG + Tool-Calling Agent + Streamlit + Docker）的**核心实现、部署配置与主要测试文件**讲一遍（不含空包初始化文件、`backend` 根目录的临时调试脚本等）。每一章的结构统一为：
 
 1. **完整代码**：先把文件原样贴出来，你可以对着看。
 2. **这段代码解决什么问题**：先讲设计意图，再讲实现。
@@ -36,6 +36,7 @@ code-assistant-agent/
 │   │   ├── database.py            # 【第1层】异步数据库引擎 + 依赖注入
 │   │   ├── auth.py                # 【第3层】JWT 鉴权 + bcrypt + Redis 黑名单
 │   │   ├── middleware.py          # 【第3层】Redis 滑动窗口限流（可注入 redis_client）
+│   │   ├── clients.py             # 【第3层】共享 Redis 客户端（进程级单例）
 │   │   ├── models/                # 【第2层】9 张表的 ORM 模型
 │   │   │   ├── user.py
 │   │   │   ├── conversation.py
@@ -69,10 +70,14 @@ code-assistant-agent/
 │   │   │   └── conversation_service.py
 │   │   ├── routers/               # 【第7层】API 路由层
 │   │   │   ├── auth_router.py
-│   │   │   ├── agent_router.py    # 支持多知识库 + 返回执行轨迹
-│   │   │   ├── search_router.py   # 支持多知识库 + 真实 latency
+│   │   │   ├── agent_router.py    # 多知识库 + SSE 流式 + 执行轨迹 + 引用 + 性能指标
+│   │   │   ├── search_router.py   # 多知识库 + 真实 latency + /search/source 源码查看
 │   │   │   └── upload_router.py
 │   │   └── main.py                # 【第8层】应用入口
+│   ├── scripts/                   # 辅助脚本
+│   │   └── eval_ragas.py          # 可选 RAGAS 评估（Judge LLM 打分）
+│   ├── data/
+│   │   └── eval/                  # project 知识库评测题集（JSON）
 │   ├── tests/                     # 【第8.6层】单元测试与集成测试
 │   │   ├── conftest.py            # 测试环境配置（连测试库、跳过密钥校验）
 │   │   ├── test_auth.py           # 密码哈希单元测试
@@ -91,6 +96,7 @@ code-assistant-agent/
 │   └── Dockerfile                 # 【第8层】前端镜像
 ├── docker-compose.yml             # 【第8层】一键部署
 ├── .github/workflows/ci.yml       # 【第8层】CI
+├── docs/                          # 项目文档（演示脚本等）
 ├── .env.example                   # 环境变量模板
 └── README.md                      # 项目说明
 ```
@@ -115,6 +121,7 @@ code-assistant-agent/
 - [第 3 层 安全：鉴权与限流](#第-3-层-安全鉴权与限流)
   - [3.1 auth.py](#31-authpy--jwt-鉴权全家桶)
   - [3.2 middleware.py](#32-middlewarepy--redis-滑动窗口限流)
+  - [3.3 clients.py](#33-clientspy--共享客户端进程级单例)
 - [第 4 层 RAG 检索管线](#第-4-层-rag-检索管线)
   - [4.1 chunker.py](#41-chunkerpy--代码分块器)
   - [4.2 knowledge_bases.py](#42-knowledge_basespy--多知识库定义)
@@ -127,6 +134,7 @@ code-assistant-agent/
   - [4.9 user_upload.py](#49-user_uploadpy--用户上传隔离检索)
   - [4.10 test_set.py](#410-test_setpy--评测测试集)
   - [4.11 evaluation.py](#411-evaluationpy--评估引擎与消融实验)
+  - [4.12 scripts/eval_ragas.py](#412-scriptseval_ragaspy--端到端-ragas-评估脚本)
 - [第 5 层 Agent：让模型自己决策](#第-5-层-agent让模型自己决策)
   - [5.1 llm.py](#51-llmpy--llm-调用封装)
   - [5.2 tool_base.py](#52-tool_basepy--工具抽象基类)
@@ -171,8 +179,8 @@ code-assistant-agent/
 | **测试生成 / 代码解释** | Agent 检索到代码后，让 LLM 解释它或给它写单元测试 | Agent 的 `explain` / `testgen` 工具 |
 
 两个知识库（`knowledge_bases.py` 定义）：
-- **tinydb**：TinyDB 开源项目（默认）
-- **project**：当前 Code Assistant Agent 项目自身源码
+- **tinydb**：TinyDB 开源项目（代码配置中的默认值）。**注意**：需要 `backend/data/target_repo` 下有 TinyDB 源码才能构建索引；当前本机可能缺失该目录（重建会返回 `skipped`），复现 TinyDB 实验前需先恢复对应源码版本。
+- **project**：当前 Code Assistant Agent 项目自身源码（当前**真正可构建、可演示**的主线知识库，无需额外源码）。
 
 每个知识库拥有独立的 Chroma collection 和 BM25 索引，互不混合。前端是一个 Streamlit 页面（对话 / 检索 / 上传三个 Tab），后端是 FastAPI。
 
@@ -197,8 +205,9 @@ code-assistant-agent/
 │  FastAPI 入口 ──► 鉴权（你是谁？）──► 限流（别刷太快）──► 路由分发  │
 │     │                                                       │
 │     ├──► /api/auth/*    注册 / 登录 / 刷新 / 登出            │
-│     ├──► /api/agent/chat   主入口：Agent 对话                │
+│     ├──► /api/agent/chat    Agent 对话（普通 + SSE 流式）    │
 │     ├──► /api/search       直接检索（不走 Agent）            │
+│     ├──► /api/search/source  查看引用的完整源码              │
 │     └──► /api/upload       上传你自己的代码，索引后也能搜     │
 └─────────────────────────────────────────────────────────────┘
 ```
@@ -237,13 +246,14 @@ top-k 代码片段（带 source 文件路径）
 
 ## 0.5 Agent 的 Tool-Calling 循环
 
-Agent 层是项目另一个亮点。它通过 **OpenAI 兼容的原生 tool-calling** 让 LLM 自己决定"要不要查、查什么、查完怎么答"，循环最多 6 步：
+Agent 层是项目另一个亮点。它通过 **OpenAI 兼容的原生 tool-calling** 让 LLM 自己决定"要不要查、查什么、查完怎么答"，循环最多 `AGENT_MAX_STEPS`（默认 4）步，且有总时长预算（`AGENT_MAX_DURATION_SECONDS`）：
 
 ```
 ① 系统提示词 + 历史 + 用户问题组装成 messages
 ② 调 call_llm_with_tools（携带工具 schema）→ LLM 返回结构化消息
 ③ 有 tool_calls → 逐个校验参数（Pydantic）→ 执行工具 → 把 tool 消息注入 → 回到②
 ④ 无 tool_calls → 认为 content 是最终答案 → 返回
+⑤ 超过步数/时长预算 → 基于已有证据优雅降级回答
 ```
 
 **相比早期手写 ReAct（LLM 输出 Action JSON + 括号深度解析），现在改用原生 tool-calling**：LLM 通过 `tools` 参数原生返回结构化的 `tool_calls`，不再需要自己从文本里解析 JSON；参数用 Pydantic `args_model` 校验，还有重复工具调用检测。后面第 5 层会详细展开。
@@ -255,7 +265,7 @@ Agent 层是项目另一个亮点。它通过 **OpenAI 兼容的原生 tool-call
 | **MySQL 8.0** | 用户、会话、消息、Agent 决策日志、检索日志、评估记录 | ORM 模型（第 2 层）+ 服务层 |
 | **Redis 7** | 检索结果缓存、BM25 索引备份、token 黑名单、限流 ZSET | 检索器 / 鉴权 / 中间件 |
 | **Chroma**（本地文件） | 稠密向量索引，按 collection 隔离：`system_code` / `project_code` / `user_uploads` | `dense_retriever.py` |
-| **文件系统** | `.env` 配置、`data/target_repo`（TinyDB 源码）、`data/chroma` | config / code_indexer |
+| **文件系统** | `.env` 配置、`data/target_repo`（TinyDB 源码）、`data/chroma`（向量库）、`data/eval`（评测题集） | config / code_indexer |
 
 **关键设计——collection 隔离**：三个 Chroma collection 互不干扰，重建系统索引（`system_code` / `project_code`）不会触碰用户上传的 `user_uploads`。这是数据隔离的物理基础。
 
@@ -316,12 +326,17 @@ Agent 层是项目另一个亮点。它通过 **OpenAI 兼容的原生 tool-call
 import os
 from pathlib import Path
 
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 class Settings(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_file=PROJECT_ROOT / ".env",
+        env_file_encoding="utf-8",
+    )
+
     # App
     APP_NAME: str = "Code Assistant Agent"
     DEBUG: bool = True
@@ -371,11 +386,6 @@ class Settings(BaseSettings):
     # LLM_MODEL: str = "gemma:7b"
     # JWT
     JWT_SECRET: str = ""  # 从 .env 读取，禁止硬编码
-
-    model_config = SettingsConfigDict(
-        env_file=PROJECT_ROOT / ".env",
-        env_file_encoding="utf-8",
-    )
 
     def _validate_secrets(self):
         """启动时校验密钥，缺失则拒绝启动，避免用空密钥签发 JWT"""
@@ -459,7 +469,7 @@ AGENT_TOOL_LLM_TIMEOUT_SECONDS: float = 12.0  # 工具内部 LLM 超时
 AGENT_REQUEST_TIMEOUT_SECONDS: float = 80.0   # 整个 HTTP 请求超时
 ```
 
-**这是"受控执行"设计**：Agent 不是无限循环，而是有一整套预算约束——步数上限、总时长、单次 LLM 超时、请求级超时。一旦超预算，harness 会用已检索到的证据生成降级回答（见 harness.py 的 `_finish_from_observations`），而不是无限挂起。这是生产级 Agent 和 demo 的关键区别。
+**这是"受控执行"设计**：Agent 不是无限循环，而是有一整套预算约束——步数上限、总时长、单次 LLM 超时、请求级超时。一旦超预算，harness 会用已检索到的证据生成降级回答（见 harness.py 的 `_finish_from_observations`），而不是无限挂起。这是"面向工程化演示的可靠性措施"——生产系统常见设计的基础实现。
 
 **⑤ `model_config` 的 `env_file_encoding = "utf-8"`**
 
@@ -525,6 +535,8 @@ cd backend && python -c "from app.config import settings; print(settings.LLM_MOD
 ### 完整代码
 
 ```python
+"""统一日志配置"""
+
 import logging
 import sys
 
@@ -603,7 +615,7 @@ Docker 容器里 `docker logs` 能抓到 stdout。生产部署日志不写文件
 ### 完整代码
 
 ```python
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
+from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession , async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase
 
 from app.config import settings
@@ -616,20 +628,20 @@ DATABASE_URL = (
 
 engine = create_async_engine(
     DATABASE_URL,
-    echo=settings.DEBUG
+    echo = settings.DEBUG
 )
 
 async_session_factory = async_sessionmaker(
     engine,
-    class_=AsyncSession,
+    class_= AsyncSession,
     expire_on_commit=False
 )
 
-
 class Base(DeclarativeBase):
-    """所有ORM类型的基类"""
+    """
+    所有ORM类型的基类
+    """
     pass
-
 
 async def get_db():
     """FASTAPI依赖注入：每次请求都创建一个数据库会话"""
@@ -1247,7 +1259,7 @@ async def get_current_user(
     payload = decode_token(credentials.credentials)
     username = payload.get("sub")
     if not username:
-        raise HTTPException(status_code=401 , detail="Invalid token")
+        raise HTTPException(status_code=401 , detail="Invalid token") 
 
     result = await db.execute(select(User).where(User.username == username))
     user = result.scalar_one_or_none()
@@ -1255,22 +1267,18 @@ async def get_current_user(
         raise HTTPException(status_code=401, detail="User not found or inactive")
     return user
 
-import redis as redis_lib
+from app.clients import get_redis_client
 
 def _get_redis():
-    return redis_lib.Redis(
-        host=settings.REDIS_HOST,
-        port=settings.REDIS_PORT,
-        db=0,
-        decode_responses=True,
-        protocol=2,
-    )
+    return get_redis_client()
 
 
 def blacklist_token(token: str, expire_seconds: int):
     """把 token 加入 Redis 黑名单"""
     try:
         r = _get_redis()
+        if r is None:
+            return
         r.setex(f"blacklist:{token}", expire_seconds, "1")
     except Exception:
         pass
@@ -1280,6 +1288,8 @@ def is_token_blacklisted(token: str) -> bool:
     """检查 token 是否在黑名单中"""
     try:
         r = _get_redis()
+        if r is None:
+            return False
         return bool(r.exists(f"blacklist:{token}"))
     except Exception:
         return False
@@ -1466,6 +1476,7 @@ from fastapi import Request
 from starlette.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from app.config import settings
+from app.clients import get_redis_client
 from app.logger import log
 
 
@@ -1477,23 +1488,23 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
     相比固定窗口（time()//window），滑动窗口不会在窗口边界产生突刺。
     """
 
-    def __init__(self, app, rate_limit: int = 60, window_seconds: int = 60):
+    def __init__(
+        self,
+        app,
+        rate_limit: int = 60,
+        window_seconds: int = 60,
+        redis_client=None,
+    ):
         super().__init__(app)
         self.rate_limit = rate_limit
         self.window_seconds = window_seconds
-        self.redis = None
-        try:
-            import redis as redis_lib
-            self.redis = redis_lib.Redis(
-                host=settings.REDIS_HOST,
-                port=settings.REDIS_PORT,
-                db=0,
-                decode_responses=True,
-                protocol=2,
-            )
-            self.redis.ping()
-        except Exception as e:
-            log.warning("Redis unavailable, rate limiting disabled: %s", e)
+        self.redis = redis_client
+        if self.redis is not None:
+            return
+
+        self.redis = get_redis_client()
+        if self.redis is None:
+            log.warning("Redis unavailable, rate limiting disabled")
 
     def _client_key(self, request: Request) -> str:
         """识别客户端：优先从 JWT 解析用户，否则退回 IP。
@@ -1677,9 +1688,112 @@ redis-cli
 # ZCARD ratelimit:demo   # 看到 2（b、c 还在）
 ```
 
+## 3.3 clients.py — 共享客户端（进程级单例）
+
+### 完整代码
+
+```python
+"""Process-wide clients shared by cache, rate limiting, and retrieval."""
+
+from threading import Lock
+
+import redis as redis_lib
+from redis.backoff import NoBackoff
+from redis.retry import Retry
+
+from app.config import settings
+from app.logger import log
+
+_redis_client = None
+_redis_initialized = False
+_redis_lock = Lock()
+
+
+def get_redis_client():
+    """Create one Redis client/connection pool for this backend process."""
+    global _redis_client, _redis_initialized
+    with _redis_lock:
+        if _redis_initialized:
+            return _redis_client
+
+        _redis_initialized = True
+        try:
+            client = redis_lib.Redis(
+                host=settings.REDIS_HOST,
+                port=settings.REDIS_PORT,
+                db=0,
+                decode_responses=True,
+                protocol=2,
+                socket_connect_timeout=0.2,
+                socket_timeout=0.2,
+                retry=Retry(NoBackoff(), retries=0),
+            )
+            client.ping()
+            _redis_client = client
+        except Exception as exc:
+            log.warning("Redis unavailable, shared client disabled: %s", exc)
+            _redis_client = None
+        return _redis_client
+```
+
+### 这段代码解决什么问题
+
+**让整个后端进程只维护一个 Redis 客户端/连接池**，供鉴权黑名单、限流中间件、检索缓存、BM25 恢复等多处复用。这是"共享基础设施"的集中管理。
+
+**为什么重要**：早期版本每个模块（auth、middleware、dense_retriever、sparse_retriever、reranker）都自己 `redis_lib.Redis(...)` 建连接——一个进程可能建好几个 Redis 连接，浪费资源，配置还不统一。`clients.py` 把这些统一成**一个惰性初始化的进程级单例**。
+
+### 关键代码逐句拆解
+
+**① 线程安全的惰性单例**
+
+```python
+_redis_client = None
+_redis_initialized = False
+_redis_lock = Lock()
+
+def get_redis_client():
+    global _redis_client, _redis_initialized
+    with _redis_lock:
+        if _redis_initialized:
+            return _redis_client
+        _redis_initialized = True
+        try:
+            client = redis_lib.Redis(...)
+            client.ping()
+            _redis_client = client
+        except Exception as exc:
+            _redis_client = None
+        return _redis_client
+```
+
+- **`_redis_initialized` 标记**：只初始化一次（双检查——外层函数判断 + 锁内再判断，避免并发下重复创建）。
+- **`Lock` 保证线程安全**：FastAPI 的 `asyncio.to_thread` 会开多线程，多个线程同时调 `get_redis_client()` 时，锁防止重复创建连接。
+- **短超时 + 不重试**（`socket_connect_timeout=0.2` / `socket_timeout=0.2` / `retry=Retry(NoBackoff(), retries=0)`）：Redis 挂掉时快速失败，不让所有依赖 Redis 的模块卡住等待。
+- **失败置 None**：Redis 不可用时返回 `None`，调用方各自降级（黑名单不检查、限流不禁用、缓存不生效）。
+
+**② 谁在用 `get_redis_client()`**
+
+- `auth.py` 的黑名单（`blacklist_token` / `is_token_blacklisted`）
+- `middleware.py` 的限流（RateLimitMiddleware）
+- `sparse_retriever.py` 的 BM25 缓存
+- `reranker.py` 的缓存
+
+**关键点**：这些模块**不再各自 new Redis 连接**，统一走 `get_redis_client()`。改 Redis 配置只动一处。
+
+### 面试答题要点
+
+> **Q：为什么 Redis 客户端要做成进程级单例？**
+> 答：避免每个模块各自建连接——多个连接浪费资源、配置不统一。用 `Lock` + 惰性初始化保证线程安全且只建一次。FastAPI 多线程下，锁防止并发重复创建。
+
+> **Q：Redis 挂了会怎样？**
+> 答：`get_redis_client` 失败返回 `None`，各调用方优雅降级——黑名单不检查（登出失效但可用）、限流不禁用、缓存不生效。这是"保护措施不能成为单点故障"的设计。
+
+> **Q：为什么短超时 + 不重试？**
+> 答：Redis 是高频依赖，挂掉时如果每个请求都等长超时 + 重试，会把整个服务拖垮。短超时（0.2s）快速失败，让依赖方立即走降级路径。
+
 ### 第 3 层小结
 
-`auth.py` 管"你是谁"（身份），`middleware.py` 管"你刷多快"（频率）。两个文件都体现了**降级优先**的设计：Redis 挂了，鉴权黑名单降级为不检查、限流降级为不禁用。这个"保护措施不能成为单点故障"的思路，是生产级代码的标志，面试官会喜欢。
+`auth.py` 管"你是谁"（身份），`middleware.py` 管"你刷多快"（频率），`clients.py` 管"共用一根管子"（共享 Redis 客户端）。三个文件都体现了**降级优先**的设计：Redis 挂了，鉴权黑名单降级为不检查、限流降级为不禁用。这个"保护措施不能成为单点故障"的思路，是面向工程化演示的可靠性设计，面试官会喜欢。
 
 ---
 
@@ -1913,14 +2027,15 @@ for line in lines:
 
 import os
 import json
+from threading import Lock
 from pathlib import Path
 from typing import Any
 
-from langchain_community.embeddings import HuggingFaceEmbeddings
-from langchain_community.vectorstores import Chroma
-from redis.backoff import NoBackoff
-from redis.retry import Retry
+from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_chroma import Chroma
+import chromadb
 
+from app.clients import get_redis_client
 from app.config import settings
 from app.logger import log
 
@@ -1931,6 +2046,37 @@ SYSTEM_CORPUS = {"source_type": "system"}
 USER_CORPUS = {"source_type": "user_upload"}
 SYSTEM_COLLECTION = "system_code"
 USER_UPLOAD_COLLECTION = "user_uploads"
+
+_embedding_models: dict[tuple[str, str], HuggingFaceEmbeddings] = {}
+_embedding_models_lock = Lock()
+_chroma_clients: dict[str, chromadb.PersistentClient] = {}
+_chroma_clients_lock = Lock()
+
+
+def get_embeddings() -> HuggingFaceEmbeddings:
+    """Load each embedding model once per backend process."""
+    key = (settings.EMBEDDING_MODEL, settings.EMBEDDING_DEVICE)
+    with _embedding_models_lock:
+        embeddings = _embedding_models.get(key)
+        if embeddings is None:
+            log.info("Loading embedding model: %s", settings.EMBEDDING_MODEL)
+            embeddings = HuggingFaceEmbeddings(
+                model_name=settings.EMBEDDING_MODEL,
+                model_kwargs={"device": settings.EMBEDDING_DEVICE},
+            )
+            _embedding_models[key] = embeddings
+        return embeddings
+
+
+def get_chroma_client(persist_dir: str) -> chromadb.PersistentClient:
+    """Reuse one Chroma persistent client for each on-disk database."""
+    path = str(Path(persist_dir).resolve())
+    with _chroma_clients_lock:
+        client = _chroma_clients.get(path)
+        if client is None:
+            client = chromadb.PersistentClient(path=path)
+            _chroma_clients[path] = client
+        return client
 
 
 class DenseRetriever:
@@ -1946,38 +2092,20 @@ class DenseRetriever:
         os.makedirs(self.persist_dir, exist_ok=True)
 
         try:
-            self.embeddings = HuggingFaceEmbeddings(
-                model_name=settings.EMBEDDING_MODEL,
-                model_kwargs={"device": settings.EMBEDDING_DEVICE},
-            )
+            self.embeddings = get_embeddings()
         except Exception as e:
             raise RuntimeError(
                 f"Failed to load embedding model '{settings.EMBEDDING_MODEL}': {e}"
             )
 
-        self.redis_client = None
-        try:
-            import redis as redis_lib
-            self.redis_client = redis_lib.Redis(
-                host=settings.REDIS_HOST,
-                port=settings.REDIS_PORT,
-                db=0,
-                decode_responses=True,
-                protocol=2,
-                socket_connect_timeout=0.2,
-                socket_timeout=0.2,
-                retry=Retry(NoBackoff(), retries=0),
-            )
-            self.redis_client.ping()
-        except Exception as e:
-            log.warning("Redis not available, caching disabled: %s", e)
-            self.redis_client = None
+        self.redis_client = get_redis_client()
 
         try:
             self.db = Chroma(
                 collection_name=self.collection_name,
                 persist_directory=self.persist_dir,
                 embedding_function=self.embeddings,
+                client=get_chroma_client(self.persist_dir),
             )
         except Exception as e:
             raise RuntimeError(f"Failed to initialize Chroma at {self.persist_dir}: {e}")
@@ -2096,6 +2224,51 @@ class DenseRetriever:
         except Exception as e:
             log.error("Failed to add chunks: %s", e)
             return []
+
+    def replace_chunks(self, chunks: list[dict[str, Any]]) -> list[str]:
+        """Replace a collection while restoring its prior contents on write failure."""
+        if not chunks:
+            raise ValueError("Cannot replace a collection with no chunks")
+
+        old_documents = []
+        old_metadatas = []
+        old_ids = []
+        try:
+            previous = self.db.get(include=["documents", "metadatas"])
+            old_documents = previous.get("documents") or []
+            old_metadatas = previous.get("metadatas") or []
+            old_ids = previous.get("ids") or []
+            self.db.delete_collection()
+            self.db = Chroma(
+                collection_name=self.collection_name,
+                persist_directory=self.persist_dir,
+                embedding_function=self.embeddings,
+                client=get_chroma_client(self.persist_dir),
+            )
+            ids = self.add_chunks(chunks)
+            if len(ids) != len(chunks):
+                raise RuntimeError("Chroma did not store every new chunk")
+            return ids
+        except Exception as exc:
+            log.error("Collection replacement failed: %s", exc)
+            try:
+                self.db.delete_collection()
+                self.db = Chroma(
+                    collection_name=self.collection_name,
+                    persist_directory=self.persist_dir,
+                    embedding_function=self.embeddings,
+                    client=get_chroma_client(self.persist_dir),
+                )
+                if old_documents:
+                    self.db.add_texts(
+                        texts=old_documents,
+                        metadatas=old_metadatas,
+                        ids=old_ids,
+                    )
+                log.warning("Restored previous collection after failed replacement")
+            except Exception:
+                log.exception("Failed to restore the previous collection")
+            raise RuntimeError("Failed to replace collection") from exc
 
     def count(self) -> int:
         try:
@@ -2253,7 +2426,7 @@ def _clear_cache(self):
 > 答：两层。**物理层**：`system_code` 和 `user_uploads` 是两个独立 Chroma collection，重建系统索引只删 `system_code`，不碰用户数据；**逻辑层**：检索时 metadata filter 按 `source_type` / `owner_id` 过滤。物理 + 逻辑双重隔离。
 
 > **Q：嵌入模型选型？**
-> 答：`all-MiniLM-L6-v2`——轻量（~23MB）、快、效果均衡，适合代码检索的英文场景。代码里也留了中文模型的注释备选（bge-small-zh-v1.5）。
+> 答：默认 `all-MiniLM-L6-v2`（轻量 ~23MB、快、英文好）。代码里也留了中文模型的备选（bge-small-zh-v1.5）。**关键考量**：本项目是"中文查询 + 英文代码"的跨语言检索场景，而 all-MiniLM 是纯英文模型，对中文查询的向量表达很弱。理论上中英双语的 bge-small-zh-v1.5 可能更合适，但**具体哪个更好需要实测验证**——用 RAGAS 跑同一测试集对比两种 embedding 的分数，记录题集版本、索引版本、Judge 模型和运行日期后再下结论（见 4.12 节）。这再次说明"组件要按领域实测验证"。
 
 ---
 
@@ -2330,7 +2503,7 @@ class KnowledgeBase:
 DEFAULT_KNOWLEDGE_BASE = TINYDB_KNOWLEDGE_BASE
 ```
 
-默认 `tinydb`。这样没指定知识库的调用（Agent 工具、旧请求）自动走 TinyDB。
+默认 `tinydb`。这样没指定知识库的调用（Agent 工具、旧请求）自动走 TinyDB。**提醒**：`tinydb` 作为默认值只是代码配置；实际能否检索取决于 `backend/data/target_repo` 下是否有 TinyDB 源码（当前本机缺失时该知识库构建会返回 `skipped`）。当前完整可演示的知识库是 `project`。
 
 **③ `get_knowledge_base` — 带错误信息的查找**
 
@@ -2373,9 +2546,8 @@ import re
 import json
 
 from rank_bm25 import BM25Okapi
-from redis.backoff import NoBackoff
-from redis.retry import Retry
 
+from app.clients import get_redis_client
 from app.config import settings
 from app.logger import log
 
@@ -2389,23 +2561,7 @@ class SparseRetriever:
         self.chunks: list[dict] = []
         self._tokenized: list[list[str]] = []
 
-        self.redis_client = None
-        try:
-            import redis as redis_lib
-            self.redis_client = redis_lib.Redis(
-                host=settings.REDIS_HOST,
-                port=settings.REDIS_PORT,
-                db=0,
-                decode_responses=True,
-                protocol=2,
-                socket_connect_timeout=0.2,
-                socket_timeout=0.2,
-                retry=Retry(NoBackoff(), retries=0),
-            )
-            self.redis_client.ping()
-        except Exception as e:
-            log.warning("Redis not available: %s", e)
-            self.redis_client = None
+        self.redis_client = get_redis_client()
 
     def _tokenize(self, text: str) -> list[str]:
         tokens = re.findall(r"[a-zA-Z_]\w*", text.lower())
@@ -2828,6 +2984,10 @@ def expand_query(query: str) -> str:
 async def rewrite(query: str, strategy: str = "hyde") -> str:
     """
     统一的查询改写入口（异步，通过 to_thread 避免阻塞事件循环）
+
+    缓存说明：
+    - reranker 缓存键基于改写后的 query 文本，相同改写结果会命中缓存
+    - 若要缓存"原始查询→改写结果"的映射，需调用方自行管理
     """
     # ① 将同步的 LLM 调用扔到线程池，不阻塞事件循环
     if strategy == "hyde":
@@ -2934,6 +3094,7 @@ import json
 
 from sentence_transformers import CrossEncoder
 
+from app.clients import get_redis_client
 from app.config import settings
 from app.logger import log
 
@@ -2951,19 +3112,7 @@ class Reranker:
             log.error("Failed to load reranker: %s", e)
             self.model = None
 
-        self.redis_client = None
-        try:
-            import redis as redis_lib
-            self.redis_client = redis_lib.Redis(
-                host=settings.REDIS_HOST,
-                port=settings.REDIS_PORT,
-                db=0,
-                decode_responses=True,
-                protocol=2,
-            )
-            self.redis_client.ping()
-        except Exception:
-            self.redis_client = None
+        self.redis_client = get_redis_client()
 
     def rerank(self, query: str, candidates: list[dict], top_n: int = 3) -> list[dict]:
         if not self.model or not candidates:
@@ -3109,6 +3258,8 @@ return self.rerank(query, result["results"], top_n=top_n)
 
 import os
 import glob
+from threading import Lock
+from time import perf_counter
 from pathlib import Path
 
 from app.config import settings
@@ -3128,6 +3279,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 EXCLUDED_DIRECTORY_NAMES = {
     ".git", ".pytest_cache", ".venv", "env", "venv", "__pycache__", "data",
 }
+_rebuild_lock = Lock()
 
 
 def load_code_files(repo_path: str) -> list[dict]:
@@ -3183,7 +3335,8 @@ def load_code_files(repo_path: str) -> list[dict]:
 
 
 async def save_version_record(strategy: str, chunk_size: int, chunk_overlap: int,
-                              file_count: int, chunk_count: int):
+                              file_count: int, chunk_count: int,
+                              build_duration_ms: int | None = None):
     """异步写入索引版本记录"""
     try:
         async with async_session_factory() as session:
@@ -3193,6 +3346,7 @@ async def save_version_record(strategy: str, chunk_size: int, chunk_overlap: int
                 chunk_overlap=chunk_overlap,
                 file_count=file_count,
                 chunk_count=chunk_count,
+                build_duration_ms=build_duration_ms,
             ))
             await session.commit()
         log.info("Version record saved")
@@ -3202,62 +3356,71 @@ async def save_version_record(strategy: str, chunk_size: int, chunk_overlap: int
 
 async def create_index(knowledge_base_id: str = DEFAULT_KNOWLEDGE_BASE):
     """主流程：加载代码 → chunker 分块 → retriever 存储"""
-    knowledge_base = get_knowledge_base(knowledge_base_id)
-    log.info("Loading %s code from %s", knowledge_base.id, knowledge_base.repo_path)
-    documents = load_code_files(knowledge_base.repo_path)
-    log.info("Loaded %d files", len(documents))
+    if not _rebuild_lock.acquire(blocking=False):
+        return {"status": "busy", "knowledge_base": knowledge_base_id}
 
-    if not documents:
-        log.error("No .py files found!")
-        return
-
+    started_at = perf_counter()
     try:
+        knowledge_base = get_knowledge_base(knowledge_base_id)
+        log.info("Loading %s code from %s", knowledge_base.id, knowledge_base.repo_path)
+        documents = load_code_files(knowledge_base.repo_path)
+        log.info("Loaded %d files", len(documents))
+        if not documents:
+            return {
+                "status": "skipped",
+                "knowledge_base": knowledge_base.id,
+                "reason": "No indexable Python files found; existing index was kept",
+            }
+
         chunker = CodeChunker(
             strategy=settings.CHUNK_STRATEGY,
             chunk_size=settings.CHUNK_SIZE,
             chunk_overlap=settings.CHUNK_OVERLAP,
         )
-    except Exception as e:
-        log.error("Failed to create chunker: %s", e)
-        return
-
-    log.info("Using chunk strategy: %s", settings.CHUNK_STRATEGY)
-    try:
         chunks = chunker.chunk(documents)
-    except Exception as e:
-        log.error("Chunking failed: %s", e)
-        return
-    log.info("Created %d chunks", len(chunks))
+        if not chunks:
+            return {
+                "status": "skipped",
+                "knowledge_base": knowledge_base.id,
+                "reason": "Chunking produced no content; existing index was kept",
+            }
+        log.info("Created %d chunks", len(chunks))
 
-    # 给系统语料打标，便于检索时与用户上传内容隔离
-    for c in chunks:
-        c["metadata"]["source_type"] = "system"
-        c["metadata"]["knowledge_base"] = knowledge_base.id
+        for chunk in chunks:
+            chunk["metadata"]["source_type"] = "system"
+            chunk["metadata"]["knowledge_base"] = knowledge_base.id
 
-    try:
         retriever = DenseRetriever(collection_name=knowledge_base.collection_name)
-        retriever.delete_collection()
-        retriever = DenseRetriever(collection_name=knowledge_base.collection_name)
-        retriever.add_chunks(chunks)
-
-        # 从同一批 chunks 构建 BM25 稀疏索引并缓存到 Redis
+        retriever.replace_chunks(chunks)
         sparse = SparseRetriever.from_chunks(chunks, knowledge_base.collection_name)
-        log.info("BM25 index for %s built with %d chunks", knowledge_base.id, sparse.count())
-
+        duration_ms = round((perf_counter() - started_at) * 1000)
         await save_version_record(
             strategy=settings.CHUNK_STRATEGY,
             chunk_size=settings.CHUNK_SIZE,
             chunk_overlap=settings.CHUNK_OVERLAP,
             file_count=len(documents),
             chunk_count=len(chunks),
+            build_duration_ms=duration_ms,
         )
-
         log.info("Index %s built successfully with %d chunks", knowledge_base.id, len(chunks))
-    except Exception as e:
-        log.error("Failed to build index: %s", e)
-        return
-
-    return {"dense": retriever, "sparse": sparse}
+        return {
+            "status": "ready",
+            "knowledge_base": knowledge_base.id,
+            "file_count": len(documents),
+            "chunk_count": len(chunks),
+            "duration_ms": duration_ms,
+            "dense": retriever,
+            "sparse": sparse,
+        }
+    except Exception as exc:
+        log.exception("Failed to build index %s", knowledge_base_id)
+        return {
+            "status": "failed",
+            "knowledge_base": knowledge_base_id,
+            "reason": str(exc),
+        }
+    finally:
+        _rebuild_lock.release()
 
 
 async def rebuild_index(knowledge_base_id: str = DEFAULT_KNOWLEDGE_BASE):
@@ -3278,7 +3441,11 @@ if __name__ == "__main__":
 
     async def main():
         try:
-            await rebuild_all_indices()
+            results = await rebuild_all_indices()
+            for knowledge_base_id, result in results.items():
+                print(f"{knowledge_base_id}: {result['status']}")
+                if result.get("reason"):
+                    print(f"  {result['reason']}")
         finally:
             from app.database import engine
             await engine.dispose()
@@ -3519,6 +3686,9 @@ return [r for r in results
 ```python
 """测试集：代码检索问题与期望结果"""
 
+TEST_SET_VERSION = "tinydb-retrieval-v1"
+
+
 TEST_SET = [
     {
         "query": "TinyDB 如何初始化和管理默认表？",
@@ -3577,28 +3747,28 @@ TEST_SET = [
         "expected_sources": ["tinydb/operations.py"],
     },
     {
-        "query": "Query 如何实现 `one()` 方法只返回一条结果？",
-        "expected_sources": ["tinydb/queries.py", "tinydb/table.py"],
-    },
-    {
-        "query": "TinyDB 的 Table 和 Database 有什么区别？",
-        "expected_sources": ["tinydb/table.py", "tinydb/database.py"],
-    },
-    {
-        "query": "TinyDB 的 Query 模块中 `all()` 方法如何使用？",
-        "expected_sources": ["tinydb/queries.py"],
-    },
-    {
-        "query": "TinyDB 中如何实现自定义存储后端？",
-        "expected_sources": ["tinydb/storages.py"],
-    },
-    {
-        "query": "TinyDB 中的 JSONStorage 是如何工作的？",
-        "expected_sources": ["tinydb/storages.py"],
-    },
-    {
-        "query": "如何向 TinyDB 中插入数据并返回 ID？",
+        "query": "TinyDB 如何清空表和删除所有文档？",
         "expected_sources": ["tinydb/table.py"],
+    },
+    {
+        "query": "存储层在读写数据时使用了什么缓存策略？",
+        "expected_sources": ["tinydb/storages.py"],
+    },
+    {
+        "query": "TinyDB 的 search 方法是如何查找匹配文档的？",
+        "expected_sources": ["tinydb/table.py"],
+    },
+    {
+        "query": "TinyDB 的 JSONStorage 如何读取和写入文件？",
+        "expected_sources": ["tinydb/storages.py"],
+    },
+    {
+        "query": "使用 update 方法更新文档时具体发生了什么？",
+        "expected_sources": ["tinydb/table.py"],
+    },
+    {
+        "query": "Query 类如何实现基于哈希的查找和缓存？",
+        "expected_sources": ["tinydb/queries.py"],
     },
 ]
 ```
@@ -3630,17 +3800,13 @@ TEST_SET = [
 """评估引擎：测试集评估 + 指标计算 + 消融实验"""
 
 import time
-import asyncio
-import logging
-
-from app.rag.test_set import TEST_SET
-from app.rag.dense_retriever import DenseRetriever
+from app.rag.test_set import TEST_SET, TEST_SET_VERSION
+from app.rag.dense_retriever import DenseRetriever, SYSTEM_CORPUS
 from app.rag.sparse_retriever import SparseRetriever
-from app.rag.fusion import hybrid_search, rrf
+from app.rag.fusion import rrf
 from app.rag.reranker import Reranker
 from app.rag.query_rewriter import rewrite
 from app.logger import log
-from functools import partial
 
 
 def _normalize(source: str) -> str:
@@ -3701,8 +3867,12 @@ async def evaluate_config(
     运行一轮评估，返回聚合指标
     参数控制消融实验：关掉某个组件就看指标怎么掉
     """
-    dense_retriever = DenseRetriever()
-    sparse_retriever = SparseRetriever()
+    dense_retriever = DenseRetriever() if dense else None
+    sparse_retriever = SparseRetriever.from_redis() if sparse else None
+    if sparse_retriever and sparse_retriever.count() == 0:
+        raise RuntimeError(
+            "BM25 index is unavailable. Rebuild the system index before running evaluation."
+        )
     reranker_instance = Reranker() if reranker else None
 
     total_hit_rate = 0.0
@@ -3725,7 +3895,9 @@ async def evaluate_config(
         sparse_results = []
 
         if dense_retriever:
-            dense_results = dense_retriever.search(query, top_k * 2)
+            dense_results = dense_retriever.search(
+                query, top_k * 2, where=SYSTEM_CORPUS
+            )
 
         if sparse_retriever:
             sparse_results = sparse_retriever.search(query, top_k * 2)
@@ -3773,6 +3945,7 @@ async def evaluate_config(
         "avg_latency_ms": round(total_latency / n * 1000, 2),
         "test_set_size": n,
         "config": {
+            "dataset_version": TEST_SET_VERSION,
             "dense": dense,
             "sparse": sparse,
             "hyde": hyde,
@@ -3957,16 +4130,277 @@ configs = [
 
 ---
 
+## 4.12 scripts/eval_ragas.py — 端到端 RAGAS 评估脚本
+
+### 完整代码
+
+```python
+"""Optional RAGAS evaluation for the TinyDB retrieval-and-answer pipeline.
+
+Install with ``python -m pip install -r requirements-eval.txt``. The script
+uses the configured LLM as the judge unless RAGAS_JUDGE_* variables override
+it. It makes paid judge calls and should be run deliberately, not in CI.
+"""
+
+import argparse
+import json
+import os
+from pathlib import Path
+
+from app.agent.eval_tasks import EVAL_TASKS
+from app.agent.llm import call_llm
+from app.config import settings
+from app.rag.knowledge_bases import (
+    DEFAULT_KNOWLEDGE_BASE,
+    KNOWLEDGE_BASES,
+    get_knowledge_base,
+)
+
+
+PROJECT_EVAL_SET_PATHS = (
+    Path(__file__).resolve().parents[1] / "data" / "eval" / "project_eval_set.json",
+    Path(__file__).resolve().parents[1] / "data" / "eval" / "project_eval_set_extra.json",
+)
+
+
+def load_eval_tasks(knowledge_base_id: str) -> list[dict]:
+    """Load the reviewed test set for a supported public knowledge base."""
+    if knowledge_base_id == "tinydb":
+        return EVAL_TASKS
+    if knowledge_base_id == "project":
+        tasks = []
+        for path in PROJECT_EVAL_SET_PATHS:
+            with path.open(encoding="utf-8") as file:
+                tasks.extend(json.load(file))
+        return tasks
+    raise ValueError(f"No evaluation set for knowledge base '{knowledge_base_id}'")
+
+
+def retrieve_contexts(
+    question: str,
+    knowledge_base_id: str = DEFAULT_KNOWLEDGE_BASE,
+    top_k: int = 5,
+) -> list[str]:
+    """Use the production Hybrid RAG retrieval path for each evaluation item."""
+    from app.rag.dense_retriever import DenseRetriever, SYSTEM_CORPUS
+    from app.rag.fusion import rrf
+    from app.rag.sparse_retriever import SparseRetriever
+
+    knowledge_base = get_knowledge_base(knowledge_base_id)
+    dense = DenseRetriever(collection_name=knowledge_base.collection_name)
+    sparse = SparseRetriever.from_redis(knowledge_base.collection_name)
+    if sparse.count() == 0:
+        raise RuntimeError(
+            f"BM25 index for '{knowledge_base.id}' is unavailable. "
+            "Start Redis and rebuild that knowledge base first."
+        )
+
+    dense_results = dense.search(question, k=top_k * 2, where=SYSTEM_CORPUS)
+    sparse_results = sparse.search(question, k=top_k * 2)
+    fused = rrf([dense_results, sparse_results], top_n=top_k)
+    return [result["text"] for result in fused]
+
+
+def answer_with_context(
+    question: str,
+    contexts: list[str],
+    knowledge_base_id: str = DEFAULT_KNOWLEDGE_BASE,
+) -> str:
+    evidence = "\n\n---\n\n".join(contexts)
+    prompt = (
+        f"Question:\n{question}\n\n"
+        f"Retrieved code context:\n{evidence}\n\n"
+        "Answer only from the retrieved context. If it is insufficient, say so."
+    )
+    return call_llm(
+        prompt,
+        system_prompt=(
+            f"You are a careful {get_knowledge_base(knowledge_base_id).label} "
+            "code assistant. Answer in Chinese."
+        ),
+    )
+
+
+def build_samples(knowledge_base_id: str = DEFAULT_KNOWLEDGE_BASE) -> list[dict]:
+    """Build the RAGAS question, context, answer, and reference contract."""
+    samples = []
+    for task in load_eval_tasks(knowledge_base_id):
+        contexts = retrieve_contexts(task["question"], knowledge_base_id)
+        answer = answer_with_context(task["question"], contexts, knowledge_base_id)
+        samples.append({
+            "question": task["question"],
+            "contexts": contexts,
+            "answer": answer,
+            "ground_truth": task["reference"],
+        })
+    return samples
+
+
+def _judge_base_url(endpoint: str) -> str:
+    suffix = "/chat/completions"
+    if not endpoint.endswith(suffix):
+        raise RuntimeError(
+            "RAGAS requires an OpenAI-compatible chat-completions endpoint."
+        )
+    return endpoint[:-len(suffix)]
+
+
+def run(knowledge_base_id: str = DEFAULT_KNOWLEDGE_BASE) -> None:
+    try:
+        from datasets import Dataset
+        from langchain_community.embeddings import HuggingFaceEmbeddings
+        from langchain_openai import ChatOpenAI
+        from ragas import evaluate
+        from ragas.metrics import answer_correctness, context_precision
+    except ImportError as exc:
+        import traceback
+        traceback.print_exc()
+        raise SystemExit(
+            "Install optional evaluation dependencies first: "
+            "python -m pip install -r requirements-eval.txt"
+        ) from exc
+
+    judge_endpoint = os.getenv("RAGAS_JUDGE_ENDPOINT", settings.LLM_API_ENDPOINT)
+    judge_model = os.getenv("RAGAS_JUDGE_MODEL", settings.LLM_MODEL)
+    judge_key = os.getenv("RAGAS_JUDGE_API_KEY", settings.LLM_API_KEY)
+    if not judge_key:
+        raise SystemExit("RAGAS_JUDGE_API_KEY or LLM_API_KEY must be configured.")
+
+    judge = ChatOpenAI(
+        model=judge_model,
+        openai_api_key=judge_key,
+        openai_api_base=_judge_base_url(judge_endpoint),
+        temperature=0,
+    )
+    local_embeddings = HuggingFaceEmbeddings(
+        model_name=settings.EMBEDDING_MODEL,
+        model_kwargs={"device": settings.EMBEDDING_DEVICE},
+    )
+    dataset = Dataset.from_list(build_samples(knowledge_base_id))
+    result = evaluate(
+        dataset,
+        metrics=[context_precision, answer_correctness],
+        llm=judge,
+        embeddings=local_embeddings,
+    )
+    print(result)
+    print(
+        f"RAGAS is an LLM-judge result on the '{knowledge_base_id}' reviewed set; "
+        "record the model, prompt, index version, and run date with every result."
+    )
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--knowledge-base",
+        choices=sorted(KNOWLEDGE_BASES),
+        default=DEFAULT_KNOWLEDGE_BASE,
+    )
+    arguments = parser.parse_args()
+    run(arguments.knowledge_base)
+```
+
+### 这段代码解决什么问题
+
+这是**可选的端到端 RAGAS 评估脚本**——用 LLM-as-Judge 评估"检索 + 生成"的最终质量，和 `evaluation.py`（检索指标 Hit Rate/MRR/NDCG）互补。
+
+**和 `evaluation.py` 的区别**：`evaluation.py` 只测检索（看检出的文件对不对）；`eval_ragas.py` 测完整链路——检索上下文 → LLM 基于上下文生成回答 → Judge LLM 给 `context_precision`（检索质量）和 `answer_correctness`（回答质量）打分。
+
+**使用**：
+```bash
+cd backend
+pip install -r requirements-eval.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
+python -m scripts.eval_ragas --knowledge-base tinydb    # 或 project
+```
+
+### 关键代码逐句拆解
+
+**① 评测集加载 `load_eval_tasks`**
+
+```python
+def load_eval_tasks(knowledge_base_id: str) -> list[dict]:
+    if knowledge_base_id == "tinydb":
+        return EVAL_TASKS                     # eval_tasks.py 的 8 条
+    if knowledge_base_id == "project":
+        tasks = []
+        for path in PROJECT_EVAL_SET_PATHS:
+            tasks.extend(json.load(path.open(encoding="utf-8")))
+        return tasks                          # data/eval/ 下两个 JSON，34 条
+    raise ValueError(...)
+```
+
+**两个知识库用不同的评测集**：tinydb 用 `eval_tasks.py` 的人工题；project 用 `data/eval/` 下的两个 JSON（含 question / reference / evidence_sources / category / difficulty）。
+
+**② 检索上下文 `retrieve_contexts`**
+
+```python
+dense = DenseRetriever(collection_name=knowledge_base.collection_name)
+sparse = SparseRetriever.from_redis(knowledge_base.collection_name)
+if sparse.count() == 0:
+    raise RuntimeError("BM25 index ... unavailable. ...")
+dense_results = dense.search(question, k=top_k * 2, where=SYSTEM_CORPUS)
+sparse_results = sparse.search(question, k=top_k * 2)
+fused = rrf([dense_results, sparse_results], top_n=top_k)
+return [result["text"] for result in fused]
+```
+
+**复用生产检索链路**（不是单独的测试实现）：Dense + BM25 + RRF，和线上 `/api/search` 用同一套。**如果 BM25 索引没建，直接抛错**（fail fast，不产出无效分数）。
+
+**③ 生成回答 `answer_with_context`**
+
+```python
+prompt = f"Question:\n{question}\n\nRetrieved code context:\n{evidence}\n\nAnswer only from the retrieved context..."
+return call_llm(prompt, system_prompt=...)
+```
+
+让业务 LLM 基于检索到的代码片段生成回答，要求"只依据检索上下文，不足就明说"。
+
+**④ RAGAS 打分 `run`**
+
+```python
+judge = ChatOpenAI(model=judge_model, openai_api_key=judge_key,
+                   openai_api_base=_judge_base_url(judge_endpoint), temperature=0)
+local_embeddings = HuggingFaceEmbeddings(model_name=settings.EMBEDDING_MODEL, ...)
+result = evaluate(dataset, metrics=[context_precision, answer_correctness],
+                  llm=judge, embeddings=local_embeddings)
+```
+
+- **Judge LLM**：默认用业务 LLM（DeepSeek），可用 `RAGAS_JUDGE_*` 覆盖。`_judge_base_url` 要求端点以 `/chat/completions` 结尾。
+- **`context_precision`**：检索上下文对回答的有用程度（注意：ragas 0.1.22 里叫 `context_precision`，不是 `context_relevancy`——后者在旧版不存在）。
+- **`answer_correctness`**：回答与 `ground_truth`（参考答案）的一致性。
+- **`temperature=0`**：Judge 打分要确定，不能有随机性。
+
+**⑤ 诚实提示**
+
+脚本结尾打印：
+```
+RAGAS is an LLM-judge result on the 'tinydb' reviewed set; record the model, prompt, index version, and run date with every result.
+```
+
+提醒：**记录模型、提示词、索引版本、运行日期**，否则分数不可引用。这是评估可复现性的自我约束。
+
+### 面试答题要点
+
+> **Q：RAGAS 评估和 evaluation.py 的消融实验有什么区别？**
+> 答：消融实验（evaluation.py）测检索质量（Hit Rate/MRR/NDCG，看检出的文件对不对）；RAGAS 测端到端（检索 + 生成，Judge LLM 给 context_precision 和 answer_correctness）。一个是中间环节，一个是最终效果。
+
+> **Q：Judge LLM 用什么？**
+> 答：默认复用业务 LLM（DeepSeek），可用 `RAGAS_JUDGE_ENDPOINT/MODEL/API_KEY` 覆盖。Judge 打分 `temperature=0` 保证确定性。注意 ragas 0.1.22 的指标主要针对 OpenAI 生态调优，用 DeepSeek 当 judge 分数可能系统性偏低。
+
+> **Q：评测集哪来的？**
+> 答：tinydb 用 `eval_tasks.py` 的 8 条人工题；project 用 `data/eval/` 下两个 JSON（34 条，每条含 question / reference / evidence_sources）。这些 JSON 在项目索引排除目录里，避免参考答案泄漏进知识库。
+
 ### 第 4 层小结
 
-RAG 管线的 11 个文件，按职能分四组：
+RAG 管线的 12 个文件 + 1 个评估脚本，按职能分四组：
 
 - **多知识库**：knowledge_bases（定义 tinydb / project 的元信息）。
 - **在线链路**：chunker（分块）→ dense（语义）→ sparse（关键词）→ fusion（RRF 融合）→ rewriter（HyDE 改写）→ reranker（精排）。每个组件都是可开关的。
-- **离线编排**：code_indexer（按知识库建索引 + 打标签）、user_upload（独立 collection + owner 隔离）。
-- **评估**：test_set（20 条标准答案）、evaluation（指标 + 消融）。
+- **离线编排**：code_indexer（按知识库建索引 + 打标签 + 防并发重建）、user_upload（独立 collection + owner 隔离）。
+- **评估**：test_set（评测题集）、evaluation（检索指标 + 消融）、scripts/eval_ragas.py（端到端 RAGAS）。
 
-**贯穿全层的思想**：每个组件都有降级路径（模型挂了跳过、缓存挂了降级、改写失败返回原查询）、都有缓存（Redis）、都有日志（可观测）、都有数据支撑（消融实验）。这就是"工程化 RAG"和"demo RAG"的区别。
+**贯穿全层的思想**：每个组件都有降级路径（模型挂了跳过、缓存挂了降级、改写失败返回原查询）、都有缓存（Redis）、都有日志（可观测）、都有数据支撑（消融实验 + RAGAS）。这就是"工程化 RAG"和"demo RAG"的区别。
 
 ---
 
@@ -4344,7 +4778,7 @@ def call_llm_with_messages_stream(
 > 答：LLM 服务不稳定（超时、5xx）。重试 + 指数退避（1s → 2s）提高成功率，同时避免并发重试把服务打爆。退避防止"雪崩式重试"。
 
 > **Q：cancel_event 是干嘛的？**
-> 答：客户端断开（SSE 连接消失）时置位。所有 LLM 调用在重试前检查它——用户都走了还打重试是浪费。这是流式场景的生产级细节。
+> 答：客户端断开（SSE 连接消失）时置位。所有 LLM 调用在重试前检查它——用户都走了还打重试是浪费。这是流式场景的可靠性细节。
 
 > **Q：四个 LLM 入口怎么分工？**
 > 答：`call_llm`（单轮文本）给改写和工具加工；`call_llm_with_messages`（多轮文本）给对话和降级总结；`call_llm_with_messages_stream`（流式）给 SSE 最终回答；`call_llm_with_tools`（带工具 schema）给 Agent 循环。四者共用 `_post_with_retries` 的重试 + 取消逻辑。
@@ -4465,6 +4899,7 @@ def validate_args(self, args: dict) -> dict:
 FUNCTION_CALLING_SYSTEM_PROMPT = """You are the {knowledge_base} code analysis assistant.
 Use the provided tools when code search, code explanation, or test generation is needed.
 Never imitate a tool call or fabricate a tool result in message text. Treat tool results as the only source of code evidence.
+Make at most one tool call per turn. After receiving sufficient search results, answer directly instead of making another tool call.
 Answer in Chinese, concisely and accurately."""
 
 
@@ -4534,6 +4969,7 @@ from pydantic import BaseModel, Field
 
 from app.agent.llm import call_llm
 from app.agent.tool_base import Tool
+from app.config import settings
 from app.rag.dense_retriever import DenseRetriever, SYSTEM_CORPUS
 from app.rag.fusion import rrf
 from app.rag.knowledge_bases import DEFAULT_KNOWLEDGE_BASE, get_knowledge_base
@@ -4551,6 +4987,7 @@ class TargetArgs(BaseModel):
 class CodeTool(Tool):
     def __init__(self, knowledge_base_id: str = DEFAULT_KNOWLEDGE_BASE):
         self.knowledge_base = get_knowledge_base(knowledge_base_id)
+        self.last_citations: list[dict] = []
 
     def _dense_retriever(self) -> DenseRetriever:
         return DenseRetriever(collection_name=self.knowledge_base.collection_name)
@@ -4561,8 +4998,17 @@ class CodeTool(Tool):
         dense_results = dense.search(query, k=top_k * 2, where=SYSTEM_CORPUS)
         sparse_results = sparse.search(query, k=top_k * 2)
         if dense_results and sparse_results:
-            return rrf([dense_results, sparse_results], top_n=top_k)
-        return (dense_results or sparse_results)[:top_k]
+            results = rrf([dense_results, sparse_results], top_n=top_k)
+        else:
+            results = (dense_results or sparse_results)[:top_k]
+        self.last_citations = [
+            {
+                "source": result["source"],
+                "excerpt": result["text"][:300],
+            }
+            for result in results
+        ]
+        return results
 
 
 class SearchCode(CodeTool):
@@ -4600,6 +5046,8 @@ class ExplainCode(CodeTool):
         return call_llm(
             f"Explain the role of '{target}' in this code:\n\n{context}",
             system_prompt="You are a Python code tutor. Answer concisely in Chinese.",
+            max_retries=0,
+            timeout_seconds=settings.AGENT_TOOL_LLM_TIMEOUT_SECONDS,
         )
 
 
@@ -4620,6 +5068,8 @@ class GenerateTest(CodeTool):
         return call_llm(
             f"Write pytest tests for '{target}' in the code below:\n\n{context}\n\nOutput code only.",
             system_prompt="You are a Python test engineer. Output runnable pytest code only.",
+            max_retries=0,
+            timeout_seconds=settings.AGENT_TOOL_LLM_TIMEOUT_SECONDS,
         )
 
 
@@ -5149,7 +5599,7 @@ class AgentHarness:
 
 ### 这段代码解决什么问题
 
-这是 **Agent 的核心循环引擎**。它把 tool-calling 的"模型决策 → 工具执行 → 结果回传"串起来，最多 6 步：
+这是 **Agent 的核心循环引擎**。它把 tool-calling 的"模型决策 → 工具执行 → 结果回传"串起来，最多 `AGENT_MAX_STEPS`（默认 4）步，且有总时长预算：
 
 ```
 ① 系统提示词（按知识库）+ 历史 + 用户问题组装成 messages
@@ -5261,7 +5711,7 @@ def _fallback_answer(self, reason):
 1. 如果还有时间，让 LLM 基于已检索到的 `observation` 做最后一次总结（提示词明确"不要编造"）。
 2. 没时间就直接把已获得的证据文本给用户。
 
-这是"**优雅降级**"——用户至少拿到部分价值，而不是一个空错误。**这是生产级 Agent 和 demo 的关键区别**。
+这是"**优雅降级**"——用户至少拿到部分价值，而不是一个空错误。**这是面向工程化演示的可靠性措施（生产系统常见设计的基础实现）**。
 
 **③ 工具执行 — 校验 + 状态分类 + 指标（亮点）**
 
@@ -5527,22 +5977,22 @@ EVAL_TASKS = [
 
 8 条任务覆盖了 Agent 应该会的几类事：存储机制、查询机制、API 使用（insert/update）、**测试生成**、中间件原理、并发安全——正好对应 `search` / `explain` / `testgen` 三个工具的场景。
 
-### 重要说明：当前是"预留"代码
+### 重要说明：现在有配套评估脚本了
 
-**`eval_tasks.py` 目前没有任何地方 import 它**（在 `backend/app/` 里全局搜索，只有它自己被定义）。也就是说：
+**`eval_tasks.py` 已被 `backend/scripts/eval_ragas.py` 引用**——它作为 **tinydb 知识库的 RAGAS 评测集**（`load_eval_tasks("tinydb")` 返回 `EVAL_TASKS`）。所以它已经从"预留数据"变成了**真实使用的评测数据**：
 
-- 它定义好了任务集，但**评估 Agent 回答的脚本还没写**（不像 `test_set.py` 有配套的 `evaluation.py`）。
-- 它和 `AGENT 的评测引擎` 之间的关系是"数据有了，跑分代码待补"。
+- tinydb 知识库 → 用 `eval_tasks.py` 的 8 条题
+- project 知识库 → 用 `backend/data/eval/` 下的两个 JSON（34 条题）
 
-**为什么文档仍要讲它？** 因为它是项目结构的一部分，也是很好的面试素材——"我设计了 Agent 评测任务集（8 条问答，覆盖存储/查询/测试生成等场景），配套的自动化评分脚本是下一步工作"。这比让面试官发现一个"没讲的死文件"要主动得多。
+配套脚本 `eval_ragas.py` 实现了完整的 RAGAS 评估链路：检索上下文 → LLM 生成回答 → Judge LLM 打分（`context_precision` / `answer_correctness`）。
 
 ### 面试答题要点
 
 > **Q：怎么评估 Agent 的回答质量？**
-> 答：项目里设计了 `eval_tasks.py` 任务集，每条有参考回答。评估思路是用文本相似度（如 ROUGE）或 LLM 打分，把 Agent 的回答和参考回答对比。目前任务集已就绪，自动化评分脚本是后续工作——这样既展示了设计，又诚实说明了进度。
+> 答：我用 RAGAS 做端到端评估。`eval_tasks.py`（tinydb）+ `data/eval/`（project）提供带参考答案的评测集，`scripts/eval_ragas.py` 跑完整链路：生产检索链路取上下文 → LLM 基于上下文生成回答 → Judge LLM 算 `context_precision`（检索质量）和 `answer_correctness`（回答与参考答案的一致性）。实测过两种 embedding 的对比（见评估记录）。
 
 > **Q：Agent 评测和 RAG 检索评测有什么区别？**
-> 答：检索评测（`test_set.py`）看"检出来的文件对不对"，指标是 Hit Rate/MRR/NDCG；Agent 评测（`eval_tasks.py`）看"最终回答像不像参考答案"，指标是文本相似度。一个是中间环节，一个是最终效果。
+> 答：检索评测（`test_set.py` + `evaluation.py`）看"检出来的文件对不对"，指标是 Hit Rate/MRR/NDCG；Agent 端到端评测（`eval_tasks.py` + `eval_ragas.py`）看"最终回答像不像参考答案 + 检索上下文是否有用"，指标是 RAGAS 的 context_precision / answer_correctness。一个是中间环节，一个是最终效果。
 
 ---
 
@@ -7517,10 +7967,13 @@ Compose 网络里，`backend` 是主机名。前端容器访问后端直接 `htt
 ### 完整代码
 
 ```dockerfile
-# backend/Dockerfile
 FROM python:3.11-slim
 
 WORKDIR /app
+
+# 换用国内 apt 源（阿里云），加速系统依赖安装
+RUN sed -i 's|deb.debian.org|mirrors.aliyun.com|g' /etc/apt/sources.list.d/debian.sources \
+    && sed -i 's|deb.debian.org|mirrors.aliyun.com|g' /etc/apt/sources.list 2>/dev/null || true
 
 # 安装系统依赖（mysqlclient + chromadb 编译需要）
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -7530,7 +7983,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 
 COPY . .
 
@@ -7738,6 +8191,8 @@ python -m pytest tests/test_auth.py tests/test_auth_api.py tests/test_agent_trac
 ```
 
 CI 现在跑 **9 个测试文件**（早期只有 3 个），覆盖：鉴权、鉴权 API、Agent 执行轨迹 API、RAGAS 评估、函数调用、RRF 融合、多知识库、限流、上传隔离。**核心思路不变——都是不加载嵌入模型/Chroma 的轻量测试**，CI 保持快速稳定。
+
+**测试分层说明**：CI 只跑这 9 个**轻量回归**（不依赖 embedding 模型 / Chroma / 付费 Judge，能在几分钟内反馈）。本地**全量 `pytest`** 还覆盖了更重的测试——源码浏览（`test_source_api`）、客户端复用（`test_clients`）、索引生命周期（`test_code_indexer` / `test_index_lifecycle`）、检索数据集（`test_retrieval_dataset`）等。所以"CI 没跑 = 没测"是误解，重测试由本地全量回归承担。
 
 ### 面试答题要点
 
@@ -8474,7 +8929,7 @@ agent_router.chat
   │  ③ load_history（conversation_service → MySQL → 最近20条）
   │  ④ harness.run（asyncio.to_thread → 线程池）
   ▼
-AgentHarness.run（tool-calling 循环，最多 6 步）
+AgentHarness.run（tool-calling 循环，最多 AGENT_MAX_STEPS=4 步）
   │  组装 messages：build_system_prompt(knowledge_base) + 历史 + 用户问题
   │  + get_tool_schemas()（各工具的 function_schema）
   ▼
@@ -8572,26 +9027,15 @@ Agent 第2步：LLM 基于检索到的 storages.py 代码，组织中文回答
 
 以下改进点按"性价比"排序。前几个是"低成本高收益"，最后一个可以做成"你主动说出的架构演进"。
 
-## 10.1 单例化 DenseRetriever（成本低、收益高）
+## 10.1 DenseRetriever 的 embedding 模型缓存（已完成）
 
-**现状**：`tools.py`、`search_router.py` 里每次请求都 `DenseRetriever()`，而它的构造函数要**加载 embedding 模型（几百 MB）+ 初始化 Chroma**。
+**现状**：`dense_retriever.py` 已通过 `get_embeddings()` + `_embedding_models` 字典实现了**进程级 embedding 模型缓存**（每个 (模型, 设备) 组合只加载一次），并用 `_chroma_clients` 复用了 Chroma 持久化客户端。**这个改进已经落地**，不再是待办。
 
-**问题**：每次请求重新加载模型，内存和耗时都浪费。
+**真实遗留**：
+- 检索器实例本身每次请求仍会 `DenseRetriever(collection_name=...)` 新建（但模型和 Chroma client 是复用的，所以开销已大幅降低）。
+- 若想更进一步，可把 `DenseRetriever` 实例也做成按 collection 复用的单例（注意 Chroma 的线程安全性，需要加锁）。
 
-**改法**：模块级单例 + 懒加载。
-
-```python
-# dense_retriever.py 末尾
-_dense_retriever = None
-
-def get_dense_retriever() -> DenseRetriever:
-    global _dense_retriever
-    if _dense_retriever is None:
-        _dense_retriever = DenseRetriever()
-    return _dense_retriever
-```
-
-**注意**：单例要考虑线程安全（加锁或依赖 FastAPI 的依赖注入缓存）。面试可以说"我意识到每次重建开销大，用懒加载单例优化，注意了并发下的线程安全"。
+**面试可以讲**："我意识到 embedding 模型加载是主要开销，用进程级缓存 + 线程锁让每个模型只加载一次，检索器实例轻量化复用底层客户端。"
 
 ## 10.2 Agent 流式输出的进一步优化（已实现基础版）
 
@@ -8612,13 +9056,15 @@ def get_dense_retriever() -> DenseRetriever:
 
 **价值**：接口完整性的进阶——不仅知道总耗时，还能看出哪一段拖慢了。
 
-## 10.4 Redis 不可用时的降级策略统一
+## 10.4 Redis 客户端统一管理（已完成）
 
-**现状**：auth 黑名单、限流、检索缓存各自处理 Redis 降级（有的 `except: pass`，有的置 None）。虽然已经统一加了短超时（`socket_connect_timeout=0.2` / `socket_timeout=0.2`），但连接创建逻辑仍有重复。
+**现状**：`clients.py` 已提供**进程级共享 Redis 客户端**（`get_redis_client()` 惰性单例 + 线程锁 + 短超时 + 不重试），auth 黑名单、限流、稀疏检索、重排都统一走它。**连接创建逻辑的重复已经消除**，不再是待办。
 
-**改法**：抽一个 `RedisClient` 工具类统一管理连接 + 降级策略，`get_redis()` 返回 None 或统一的降级包装。
+**真实遗留**：
+- 各模块对"Redis 返回 None 时如何降级"仍各自处理（黑名单跳过、限流禁用、缓存不生效），行为基本一致但未抽成统一策略。
+- 可以进一步封装一个统一的"降级包装器"，让所有调用方用同一套降级约定。
 
-**价值**：消除重复代码，面试展示"我注意到重复模式，做了抽象"。
+**面试可以讲**："我把分散在各模块的 Redis 连接抽成了 `clients.py` 的进程级单例，统一短超时与不重试策略，Redis 挂了各模块自动降级。"
 
 ## 10.5 为 feedbacks 表接入前端
 
@@ -8636,13 +9082,15 @@ def get_dense_retriever() -> DenseRetriever:
 
 **价值**：延迟减半（两路中最慢的那个），体现对并发的理解。
 
-## 10.7 索引版本升级链路（架构演进）
+## 10.7 索引生命周期管理（部分完成）
 
-**现状**：`index_versions` 记录了每次索引配置，但没有"索引过期"机制。如果改了分块策略，旧的 Chroma 索引不会自动重建。
+**现状**：`code_indexer.py` 已有**受控重建**——`_rebuild_lock` 防并发、返回 `busy / skipped / ready / failed` 状态、空源码时保留旧索引、collection 替换失败时回滚旧内容。**这已经是一个相当完整的索引生命周期**，不再是待办。
 
-**改法**：启动时对比 `index_versions` 最新记录的 strategy/chunk_size 和当前配置，不一致则自动触发 `rebuild_index()`。
+**真实遗留**：
+- 仍未实现"**源码变更自动触发重建**"——目前重建靠手动执行 `python -m app.rag.code_indexer`。
+- 仍未实现"**跨 Chroma 与 Redis 的原子切换**"——重建不是分布式事务，多实例并发时仍可能不一致（README 也承认了这点）。
 
-**价值**：配置即真相——索引自动跟随配置，面试展示"我考虑过索引的生命周期管理"。
+**面试可以讲**："我用锁 + 状态机（busy/skipped/ready/failed）+ 失败回滚管理索引生命周期，避免了并发重建和索引半更新状态；自动触发重建是下一步。"
 
 ## 10.8 单元测试覆盖扩展
 
@@ -8673,10 +9121,18 @@ def get_dense_retriever() -> DenseRetriever:
 | `CHROMA_PERSIST_DIR` | 否 | ./data/chroma | Chroma 持久化目录 |
 | `REPO_PATH` | 否 | ./data/target_repo | tinydb 知识库源码路径 |
 | `PROJECT_SOURCE_PATH` | 否 | . | project 知识库源码路径（项目自身） |
-| `CHUNK_STRATEGY` | 否 | recursive | 分块策略 |
+| `EMBEDDING_MODEL` | 否 | sentence-transformers/all-MiniLM-L6-v2 | embedding 模型（中文场景可换 BAAI/bge-small-zh-v1.5） |
+| `EMBEDDING_DEVICE` | 否 | cpu | embedding 推理设备 |
+| `CHUNK_STRATEGY` | 否 | recursive | 分块策略（recursive / semantic / token） |
+| `CHUNK_SIZE` / `CHUNK_OVERLAP` | 否 | 500 / 50 | 分块大小与重叠 |
+| `AGENT_MAX_STEPS` | 否 | 4 | Agent 最大工具调用轮数 |
+| `AGENT_MAX_DURATION_SECONDS` | 否 | 75.0 | Agent 总时长预算（秒） |
+| `AGENT_LLM_TIMEOUT_SECONDS` | 否 | 15.0 | 协调 LLM 单次调用超时 |
+| `AGENT_REQUEST_TIMEOUT_SECONDS` | 否 | 80.0 | 整个 Agent 请求超时 |
+| `RAGAS_JUDGE_ENDPOINT` / `MODEL` / `API_KEY` | 否 | 同 LLM_* | RAGAS 评估时的 Judge LLM 配置（默认复用业务 LLM） |
 
 > 密钥生成命令：`python -c "import secrets; print(secrets.token_hex(32))"`
 
 ---
 
-*文档完。按「地基 → 数据 → 安全 → RAG → Agent → 服务 → 路由 → 部署 → 测试」的顺序，项目 46 个代码文件全部讲解完毕。祝你面试顺利！*
+*文档完。按「地基 → 数据 → 安全 → RAG → Agent → 服务 → 路由 → 部署 → 测试」的顺序，覆盖了项目的核心实现、部署配置与主要测试文件。祝你面试顺利！*
