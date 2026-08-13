@@ -114,8 +114,10 @@ def run(knowledge_base_id: str = DEFAULT_KNOWLEDGE_BASE) -> None:
         from langchain_community.embeddings import HuggingFaceEmbeddings
         from langchain_openai import ChatOpenAI
         from ragas import evaluate
-        from ragas.metrics import answer_correctness, context_relevancy
+        from ragas.metrics import answer_correctness, context_precision
     except ImportError as exc:
+        import traceback
+        traceback.print_exc()
         raise SystemExit(
             "Install optional evaluation dependencies first: "
             "python -m pip install -r requirements-eval.txt"
@@ -140,7 +142,7 @@ def run(knowledge_base_id: str = DEFAULT_KNOWLEDGE_BASE) -> None:
     dataset = Dataset.from_list(build_samples(knowledge_base_id))
     result = evaluate(
         dataset,
-        metrics=[context_relevancy, answer_correctness],
+        metrics=[context_precision, answer_correctness],
         llm=judge,
         embeddings=local_embeddings,
     )
