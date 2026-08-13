@@ -1197,7 +1197,7 @@ from app.config import settings
 from app.database import get_db
 from app.models.user import User
 
-security = HTTPBearer()
+security = HTTPBearer(auto_error=False)
 
 # JWT 配置直接从 settings 读取，或硬编码默认值
 SECRET_KEY = settings.JWT_SECRET
@@ -1250,16 +1250,18 @@ def decode_token(token: str) -> dict:
         )
 
 async def get_current_user(
-    credentials: HTTPAuthorizationCredentials = Depends(security),
-    db:AsyncSession = Depends(get_db),
+    credentials: HTTPAuthorizationCredentials | None = Depends(security),
+    db: AsyncSession = Depends(get_db),
 ) -> User:
     """FastAPI 依赖注入：从请求头获取当前登录用户"""
+    if credentials is None:
+        raise HTTPException(status_code=401, detail="Not authenticated")
     if is_token_blacklisted(credentials.credentials):
         raise HTTPException(status_code=401, detail="Token has been revoked")
     payload = decode_token(credentials.credentials)
     username = payload.get("sub")
     if not username:
-        raise HTTPException(status_code=401 , detail="Invalid token") 
+        raise HTTPException(status_code=401 , detail="Invalid token")
 
     result = await db.execute(select(User).where(User.username == username))
     user = result.scalar_one_or_none()
@@ -1310,13 +1312,15 @@ def is_token_blacklisted(token: str) -> bool:
 
 ### 关键代码逐句拆解
 
-**① `security = HTTPBearer()` — 声明"我要从请求头拿 token"**
+**① `security = HTTPBearer(auto_error=False)` — 声明"我要从请求头拿 token"**
 
 ```python
-security = HTTPBearer()
+security = HTTPBearer(auto_error=False)
 ```
 
-FastAPI 的 `HTTPBearer` 是一个安全方案：自动从请求头 `Authorization: Bearer <token>` 里解析出 token。配合 `get_current_user` 的参数 `credentials: HTTPAuthorizationCredentials = Depends(security)`，FastAPI 会在路由依赖里自动解析。请求没带 token 或格式不对，直接 401。
+FastAPI 的 `HTTPBearer` 是一个安全方案：自动从请求头 `Authorization: Bearer <token>` 里解析出 token。
+
+**关键细节——`auto_error=False`**：默认的 `HTTPBearer()` 在**请求没有 Authorization 头时直接返回 403**（`auto_error=True`），但"未认证"的正确语义应该是 **401 Unauthorized**（403 是"已认证但无权限"）。改成 `auto_error=False` 后，无 token 时 FastAPI 会传 `None` 给依赖，由 `get_current_user` 显式抛 401——这样语义正确，且测试可断言。这也让 `logout` 等同时依赖 `credentials` 和 `get_current_user` 的路由行为一致（无 token 时统一 401）。
 
 **② bcrypt 哈希（hash_password / verify_password）**
 
@@ -6186,7 +6190,7 @@ async def register(req: RegisterRequest , db: AsyncSession = Depends(get_db)):
     existing = await db.execute(select(User).where(User.username == req.username))
     if existing.scalar_one_or_none():
         raise HTTPException(status_code=400 , detail="Username already exists")
-
+    
     user = User(
         username = req.username,
         hashed_password = hash_password(req.password),
@@ -6234,10 +6238,12 @@ async def refresh(refresh_token: str, db: AsyncSession = Depends(get_db)):
 
 @router.post("/logout")
 async def logout(
-    credentials: HTTPAuthorizationCredentials = Depends(security),
+    credentials: HTTPAuthorizationCredentials | None = Depends(security),
     current_user: User = Depends(get_current_user),
 ):
     # 把 access token 加入黑名单，剩余有效期
+    if credentials is None:
+        raise HTTPException(status_code=401, detail="Not authenticated")
     payload = decode_token(credentials.credentials)
     exp = payload.get("exp", 0)
     now = int(datetime.datetime.now(UTC).timestamp())
@@ -6324,6 +6330,8 @@ blacklist_token(credentials.credentials, remain)
 - `remain = exp - now`：剩余有效秒数，作为 Redis 黑名单的 TTL。
 - `max(remain, 1)`：兜底，至少 1 秒（防止刚签发就登出导致 TTL 为 0）。
 - `blacklist_token` 把 token 写进 Redis，剩余寿命到期自动清除。
+
+**关于 `credentials` 参数**：因为 `security` 用了 `auto_error=False`，`logout` 的 `credentials` 是 `Optional`，函数开头先做 `if credentials is None: raise 401` 兜底（正常情况无 token 时 `get_current_user` 依赖会先抛 401，不会到达这里；这是防御性检查）。
 
 ### 面试答题要点
 
