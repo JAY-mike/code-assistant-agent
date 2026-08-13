@@ -5989,7 +5989,7 @@ EVAL_TASKS = [
 ### 面试答题要点
 
 > **Q：怎么评估 Agent 的回答质量？**
-> 答：我用 RAGAS 做端到端评估。`eval_tasks.py`（tinydb）+ `data/eval/`（project）提供带参考答案的评测集，`scripts/eval_ragas.py` 跑完整链路：生产检索链路取上下文 → LLM 基于上下文生成回答 → Judge LLM 算 `context_precision`（检索质量）和 `answer_correctness`（回答与参考答案的一致性）。实测过两种 embedding 的对比（见评估记录）。
+> 答：我用 RAGAS 做端到端评估。`eval_tasks.py`（tinydb）+ `data/eval/`（project）提供带参考答案的评测集，`scripts/eval_ragas.py` 跑完整链路：生产检索链路取上下文 → LLM 基于上下文生成回答 → Judge LLM 算 `context_precision`（检索质量）和 `answer_correctness`（回答与参考答案的一致性）。**评估链路已跑通**；由于本地未保存完整原始输出且各轮有 judge 超时，对比分数（如不同 embedding）需重跑并记录题集版本、索引、Judge 与失败样本后才能引用（见评估记录）。
 
 > **Q：Agent 评测和 RAG 检索评测有什么区别？**
 > 答：检索评测（`test_set.py` + `evaluation.py`）看"检出来的文件对不对"，指标是 Hit Rate/MRR/NDCG；Agent 端到端评测（`eval_tasks.py` + `eval_ragas.py`）看"最终回答像不像参考答案 + 检索上下文是否有用"，指标是 RAGAS 的 context_precision / answer_correctness。一个是中间环节，一个是最终效果。
@@ -8896,7 +8896,7 @@ def test_function_calling_rejects_repeated_tool_call(monkeypatch):
 CI 还跑另外三个测试文件（内容随项目演进，这里给职责说明）：
 
 - **`test_agent_trace_api.py`**：鉴权 API + Agent 执行轨迹接口的集成测试——验证 `/api/agent/chat` 返回的 `trace` 结构符合预期。
-- **`test_eval_ragas.py`**：RAGAS 评估相关测试——验证评估链路（可能涉及 RAGAS 指标计算）。
+- **`test_eval_ragas.py`**：RAGAS 脚本**离线契约测试**——不安装 RAGAS、不调用 Judge、不计算指标，只验证 `build_samples` 的样本结构、题集加载（tinydb/project 题数）和 `_judge_base_url` 的端点格式校验。
 - **`test_knowledge_bases.py`**：多知识库定义测试——验证 `KNOWLEDGE_BASES` 的注册、`get_knowledge_base` 的查找、未知 ID 抛异常。
 
 > 注：这三个文件我没有逐一展开代码，因为它们属于"随项目演进的辅助测试"。你可以打开源码结合本节理解——它们的核心都是"用轻量依赖验证某块逻辑"。
@@ -9088,9 +9088,9 @@ Agent 第2步：LLM 基于检索到的 storages.py 代码，组织中文回答
 
 **真实遗留**：
 - 仍未实现"**源码变更自动触发重建**"——目前重建靠手动执行 `python -m app.rag.code_indexer`。
-- 仍未实现"**跨 Chroma 与 Redis 的原子切换**"——重建不是分布式事务，多实例并发时仍可能不一致（README 也承认了这点）。
+- **Chroma 与 Redis 不是原子切换**：重建顺序是"先替换 Chroma（`replace_chunks`）→ 再写 Redis BM25（`from_chunks` → `_save_to_redis`）"。若 Redis 写入失败（`_save_to_redis` 里 `except` 吞掉异常），会出现**"新 Dense + 旧/空 BM25"** 的短暂不一致。`_rebuild_lock` 和 Dense 回滚只降低了部分重建失败的风险，并不能保证两路原子一致。
 
-**面试可以讲**："我用锁 + 状态机（busy/skipped/ready/failed）+ 失败回滚管理索引生命周期，避免了并发重建和索引半更新状态；自动触发重建是下一步。"
+**面试可以讲**："我用锁 + 状态机（busy/skipped/ready/failed）+ 空源保留旧索引 + Dense 替换失败回滚来管理索引生命周期，减少了并发重建和半更新的风险。但要诚实说明：Chroma 与 Redis 的切换不是原子事务，Redis 写失败时可能出现新 Dense + 旧 BM25 的不一致——彻底解决需要版本化 collection 和显式切换流程。"
 
 ## 10.8 单元测试覆盖扩展
 

@@ -15,7 +15,7 @@ from app.config import settings
 from app.database import get_db
 from app.models.user import User
 
-security = HTTPBearer()
+security = HTTPBearer(auto_error=False)
 
 # JWT 配置直接从 settings 读取，或硬编码默认值
 SECRET_KEY = settings.JWT_SECRET
@@ -68,16 +68,18 @@ def decode_token(token: str) -> dict:
         )
 
 async def get_current_user(
-    credentials: HTTPAuthorizationCredentials = Depends(security),
-    db:AsyncSession = Depends(get_db),
+    credentials: HTTPAuthorizationCredentials | None = Depends(security),
+    db: AsyncSession = Depends(get_db),
 ) -> User:
     """FastAPI 依赖注入：从请求头获取当前登录用户"""
+    if credentials is None:
+        raise HTTPException(status_code=401, detail="Not authenticated")
     if is_token_blacklisted(credentials.credentials):
         raise HTTPException(status_code=401, detail="Token has been revoked")
     payload = decode_token(credentials.credentials)
     username = payload.get("sub")
     if not username:
-        raise HTTPException(status_code=401 , detail="Invalid token") 
+        raise HTTPException(status_code=401 , detail="Invalid token")
 
     result = await db.execute(select(User).where(User.username == username))
     user = result.scalar_one_or_none()

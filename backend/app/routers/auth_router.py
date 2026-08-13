@@ -88,10 +88,12 @@ async def refresh(refresh_token: str, db: AsyncSession = Depends(get_db)):
 
 @router.post("/logout")
 async def logout(
-    credentials: HTTPAuthorizationCredentials = Depends(security),
+    credentials: HTTPAuthorizationCredentials | None = Depends(security),
     current_user: User = Depends(get_current_user),
 ):
     # 把 access token 加入黑名单，剩余有效期
+    if credentials is None:
+        raise HTTPException(status_code=401, detail="Not authenticated")
     payload = decode_token(credentials.credentials)
     exp = payload.get("exp", 0)
     now = int(datetime.datetime.now(UTC).timestamp())
